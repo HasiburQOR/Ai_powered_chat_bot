@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Django
+staticfiles/
+db.sqlite3
+celerybeat-schedule*
+
+# Secrets — never commit
+.env
+
+# Logs & generated reports
+*.log
+*.docx
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

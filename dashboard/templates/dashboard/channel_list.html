@@ -1,0 +1,35 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Channels{% endblock %}
+{% block content %}
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+  <div>
+    <h1 class="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-3">
+      <span>📡</span> Connected Channels
+    </h1>
+    <p class="text-slate-500 text-sm mt-1">Configure integrations for Instagram DMs, Facebook Messenger, and WordPress widget.</p>
+  </div>
+  <button hx-get="{% url 'dashboard-channel-create' %}" hx-target="#modal-container"
+          class="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-semibold px-5 py-2.5 rounded-xl text-sm shadow-md shadow-emerald-500/20 hover:shadow-emerald-500/30 transition-all duration-150 transform hover:-translate-y-0.5 active:translate-y-0 cursor-pointer flex items-center justify-center gap-2 self-start md:self-auto">
+    <span>✨</span> + New Channel
+  </button>
+</div>
+
+<div class="bg-white/90 backdrop-blur border border-slate-200/80 rounded-2xl shadow-sm overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm text-left">
+      <thead class="bg-slate-50/80 text-xs font-bold uppercase tracking-wider text-slate-500 border-b border-slate-200/80">
+        <tr>
+          <th class="px-6 py-4">Channel Name</th>
+          <th class="px-6 py-4">Type</th>
+          <th class="px-6 py-4">Status</th>
+          <th class="px-6 py-4 text-right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="channel-tbody" class="divide-y divide-slate-100 font-medium">
+        {% include "dashboard/partials/channel_rows.html" %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+

@@ -1,0 +1,99 @@
+# Docker Compose file for DOKPLOY deployments (https://dokploy.com).
+#
+# Identical stack to docker-compose.yml, except:
+#   - web does NOT publish a host port: Dokploy's built-in Traefik proxy
+#     reaches it over the shared `dokploy-network` and terminates TLS
+#     (Let's Encrypt) for the domain you configure in the Dokploy UI.
+#   - Postgres vars are mandatory (:?) so a missing UI variable fails fast
+#     with a clear error instead of a half-configured stack.
+#
+# Setup: Dokploy -> New Resource -> Docker Compose -> connect this repo ->
+# Compose file path: docker-compose.dokploy.yml -> add env vars in the UI ->
+# Domains: service "web", port 8000. Full walkthrough: 06_DEPLOYMENT.md §1A.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set in the Dokploy UI}
+      POSTGRES_USER: ${POSTGRES_USER:?set in the Dokploy UI}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in the Dokploy UI}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    image: chatbot_app:latest
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "1"
+    volumes:
+      - hf_cache:/home/appuser/.cache
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - default
+      - dokploy-network
+
+  worker:
+    build: .
+    image: chatbot_app:latest
+    command: celery -A core worker -l info --concurrency=2
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - hf_cache:/home/appuser/.cache
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  beat:
+    build: .
+    image: chatbot_app:latest
+    command: celery -A core beat -l info -s /tmp/celerybeat-schedule
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  hf_cache:
+
+networks:
+  # Pre-created by Dokploy on install; its Traefik uses it to route your
+  # domain to web:8000. If it is missing on the server, run:
+  #   docker network create dokploy-network
+  dokploy-network:
+    external: true

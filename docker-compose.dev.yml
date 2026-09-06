@@ -1,0 +1,28 @@
+# Development overrides: hot-reloading runserver + live source mounts.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Run migrations manually in dev:
+#   docker compose exec web python manage.py migrate
+services:
+  web:
+    command: python manage.py runserver 0.0.0.0:8000
+    environment:
+      POSTGRES_HOST: db
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "0"
+    volumes:
+      - .:/app
+      - hf_cache:/home/appuser/.cache
+    ports:
+      # Must textually match the production binding so compose merges
+      # the two files into ONE port mapping instead of two conflicting ones.
+      - "127.0.0.1:8001:8000"
+
+  worker:
+    volumes:
+      - .:/app
+      - hf_cache:/home/appuser/.cache
+
+  beat:
+    volumes:
+      - .:/app

@@ -1,0 +1,14 @@
+{% extends "registration/base_auth.html" %}
+{% block title %}Signed out{% endblock %}
+{% block subtitle %}You have been signed out{% endblock %}
+
+{% block content %}
+  <div class="text-center">
+    <div class="w-12 h-12 mx-auto rounded-full bg-slate-700/60 flex items-center justify-center text-2xl mb-4">👋</div>
+    <p class="text-sm text-slate-400 mb-6">You have been securely signed out of the dashboard.</p>
+    <a href="{% url 'login' %}"
+       class="inline-block rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-sm font-bold py-2.5 px-8 shadow-lg shadow-indigo-500/20 transition-all">
+      Sign in again
+    </a>
+  </div>
+{% endblock %}
