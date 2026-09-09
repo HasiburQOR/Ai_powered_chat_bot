@@ -44,8 +44,9 @@ def process_inbound_message(self, channel_type, page_id, sender_id, text, raw_pa
             customer=customer, last_message_at=timezone.now()
         )
 
-    reply = handle_inbound_message(conversation, text, raw_payload=raw_payload)
-    send_platform_reply(channel, sender_id, reply.content)
+    replies = handle_inbound_message(conversation, text, raw_payload=raw_payload)
+    for reply in replies:
+        send_platform_reply(channel, sender_id, reply.content)
 
 
 @shared_task

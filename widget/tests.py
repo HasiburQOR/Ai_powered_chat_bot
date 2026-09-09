@@ -101,9 +101,9 @@ class WidgetLeadDetailsTests(TestCase):
         body = resp.content.decode()
         self.assertNotIn("msg-row visitor", body)  # visitor bubble is client-side now
         self.assertIn("msg-row bot", body)         # bot reply still appended server-side
-        # Both sides persisted as before.
+        # Visitor + bot reply + scripted travel-profile question (first exchange).
         self.assertEqual(
-            Message.objects.filter(conversation__customer__channel=self.channel).count(), 2,
+            Message.objects.filter(conversation__customer__channel=self.channel).count(), 3,
         )
 
     def test_bot_name_from_credentials_with_default_fallback(self):
@@ -148,7 +148,8 @@ class WidgetLeadDetailsTests(TestCase):
         customer = Customer.objects.get(channel=self.channel)
         self.assertEqual(customer.email, "jane@example.com")
         self.assertEqual(customer.conversations.count(), 1)
-        self.assertEqual(customer.conversations.get().messages.count(), 2)  # visitor + bot reply
+        # Visitor + bot reply + scripted travel-profile question (first exchange).
+        self.assertEqual(customer.conversations.get().messages.count(), 3)
 
     def test_garbage_session_id_is_rejected(self):
         """The <str:session_id> converter accepts anything; junk must never
@@ -167,3 +168,22 @@ class WidgetLeadDetailsTests(TestCase):
         )
         self.assertEqual(resp.status_code, 403)
         self.assertFalse(Customer.objects.filter(channel=self.channel).exists())
+
+    def test_reply_fragment_renders_bubbles_and_no_template_comment_leak(self):
+        """Regression: the multi-line `{# #}` comment in bubbles.html once
+        leaked into the live widget as literal chat text — Django `{# #}`
+        comments cannot span multiple lines. The fragment must contain only
+        bot bubbles (now possibly several per turn), never comment text."""
+        self._visit()
+        resp = self.client.post(
+            reverse("widget-send", args=[self._session_id()]),
+            {"site_key": "sk-test", "message": "Hi"},
+        )
+        body = resp.content.decode()
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("Optimistic UI", body)
+        self.assertNotIn("HTMX response for", body)
+        self.assertNotIn("#}", body)
+        # First exchange = the reply bubble + the scripted profile question.
+        self.assertEqual(body.count('class="msg-row bot"'), 2)
+        self.assertIn("WhatsApp number", body)

@@ -94,6 +94,8 @@ Global bot behavior not tied to a specific provider. Enforce singleton via a fix
 | `max_context_messages` | IntegerField, default `10` | How many recent messages count as short-term memory |
 | `memory_summary_trigger_count` | IntegerField, default `20` | Regenerate `Customer.memory_summary` every N new messages |
 | `business_hours` | JSONField, blank | Optional, used by rules/prompt context |
+| `profile_collection_enabled` | BooleanField, default `True` | When on, the bot asks new contacts a short set of travel-profile questions after its first reply in a new conversation, and files their answers into a `TravelProfile` |
+| `profile_intro_message` | TextField | The scripted question sent right after the bot's first reply in a new conversation (requires `profile_collection_enabled`) |
 
 **CRUD:** single edit form only (no list/create/delete — there's only ever one row).
 
@@ -120,6 +122,38 @@ One row per unique end-user per channel. This is where long-term memory lives.
 ### `Conversation`
 | Field | Type | Notes |
 |---|---|---|
+
+---
+
+## `profiles` app
+
+### `TravelProfile`
+Travel-lead details the bot captures from free-text conversation (1:1 with `Customer`, `related_name="travel_profile"`). The row is created automatically the first time the LLM extraction finds a real detail in a message; staff can also edit everything from the dashboard's Profiles page.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID pk | |
+| `customer` | OneToOneField → `conversations.Customer` | |
+| `profile_number` | CharField, unique | Human-friendly lead code `BP-000123`, minted from `ProfileNumberCounter` (row-locked increment) when the profile is created |
+| `full_name` | CharField, blank | Also backfills `Customer.display_name` when that is still empty/"Website visitor" |
+| `whatsapp_number` | CharField, blank | |
+| `nationality` | CharField, blank | |
+| `residence_country` | CharField, blank | |
+| `gcc_residence_card` | BooleanField, null | `null` = not asked yet |
+| `residence_card_expiry` | DateField, null | Only meaningful when `gcc_residence_card` is true |
+| `travel_date` | DateField, null | Approximate trip start; fuzzy dates ("next month") are resolved best-effort by the LLM |
+| `trip_days` | PositiveIntegerField, null | Package length in days |
+| `adults` | PositiveIntegerField, null | Adult travellers |
+| `children_ages` | CharField, blank | Comma-separated ages, e.g. "5, 8" |
+| `is_complete` | BooleanField, default `False` | Auto-computed: all required fields present (name, WhatsApp, nationality, residence, travel date, trip days, adults); `completed_at` stamps the first completion |
+| `created_at` / `updated_at` | DateTime | |
+
+A field snapshot ("captured / still missing") is injected into the bot's LLM context each turn so it can ask for missing details naturally. Dashboard exports (CSV + Excel) use explicit columns: Profile Number, Name, WhatsApp, Nationality, Residence Country, GCC Residence Card, Card Expiry, Travel Date, Trip Days, Adults, Children Ages, Total Travellers, Channel, Complete, Completed At, Last Updated. Per-profile PNG downloads: a profile card and a chat transcript image, filenames `<ProfileNumber>_<CustomerName>[.png|_transcript.png]`.
+
+**CRUD:** full (dashboard Profiles page: list + search/filter, detail + edit, CSV/Excel export, PNG downloads); delete is not offered — a lead is never thrown away.
+
+### `ProfileNumberCounter`
+Single-row (`id=1`) counter backing `BP-xxxxxx` codes; `next_profile_number()` increments under `select_for_update()` so concurrent extractions can never collide. Not exposed in the dashboard.
 | `id` | UUID pk | |
 | `customer` | FK → `Customer` | |
 | `status` | CharField, choices: `bot`, `escalated`, `human`, default `bot` | Stubbed for future handoff |

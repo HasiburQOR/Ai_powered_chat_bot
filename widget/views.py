@@ -291,15 +291,15 @@ def send_message(request, session_id):
     _, conversation = _ensure_customer_and_conversation(channel, session_id)
 
     try:
-        reply = handle_inbound_message(conversation, text)
+        replies = handle_inbound_message(conversation, text)
     except Exception:
-        reply = Message.objects.create(
+        replies = [Message.objects.create(
             conversation=conversation,
             sender_type=Message.SenderType.BOT,
             content="Sorry, something went wrong on our side. Please try again in a moment.",
-        )
+        )]
 
     return render(request, "widget/partials/bubbles.html", {
         "pair": True,
-        "reply": reply,
+        "replies": replies,
     })

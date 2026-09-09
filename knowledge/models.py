@@ -50,6 +50,16 @@ class Rule(models.Model):
         return self.name
 
 
+PROFILE_INTRO_MESSAGE_DEFAULT = (
+    "May I have the following information?\n"
+    "- Name and WhatsApp number?\n"
+    "- Nationality and country of residence? If you have a GCC residence card, its expiry date too.\n"
+    "- Approximate travel date?\n"
+    "- How many days package are you looking for?\n"
+    "- How many people are travelling together? For children, please share their ages."
+)
+
+
 class BotSettings(models.Model):
     """Singleton holding global bot behavior not tied to a specific provider."""
 
@@ -63,6 +73,16 @@ class BotSettings(models.Model):
         default=20, help_text='Regenerate Customer.memory_summary every N new messages')
     business_hours = models.JSONField(blank=True, default=dict, null=True,
                                       help_text='Optional, used by rules/prompt context')
+    profile_collection_enabled = models.BooleanField(
+        default=True,
+        help_text='When on, the bot asks new contacts a short set of travel-profile '
+                  'questions (after its first reply in a new conversation) and files '
+                  'their answers into a customer profile.')
+    profile_intro_message = models.TextField(
+        default=PROFILE_INTRO_MESSAGE_DEFAULT,
+        blank=True,
+        help_text='Scripted question sent right after the bot\'s first reply in a '
+                  'new conversation (requires profile collection to be enabled).')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

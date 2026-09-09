@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'llm',
     'knowledge',
     'conversations',
+    'profiles',
     'bot',
     'webhooks',
     'widget',

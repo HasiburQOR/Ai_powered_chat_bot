@@ -33,4 +33,11 @@ urlpatterns = [
     path("conversations/<uuid:pk>/update-status/", views.conversation_update_status, name="dashboard-conversation-update-status"),
 
     path("settings/", views.bot_settings, name="dashboard-bot-settings"),
+
+    path("profiles/", views.profile_list, name="dashboard-profiles"),
+    path("profiles/export.csv", views.profile_export_csv, name="dashboard-profile-export-csv"),
+    path("profiles/export.xlsx", views.profile_export_xlsx, name="dashboard-profile-export-xlsx"),
+    path("profiles/<uuid:pk>/", views.profile_detail, name="dashboard-profile-detail"),
+    path("profiles/<uuid:pk>/card.png", views.profile_card_png, name="dashboard-profile-card"),
+    path("profiles/<uuid:pk>/transcript.png", views.profile_transcript_png, name="dashboard-profile-transcript"),
 ]

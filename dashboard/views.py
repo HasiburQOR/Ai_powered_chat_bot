@@ -1,5 +1,7 @@
 import csv
+import io
 import json
+import uuid as uuid_lib
 
 from accounts.decorators import staff_required
 from django.db.models import Q
@@ -8,10 +10,12 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 
-from conversations.models import Conversation
+from conversations.models import Conversation, Message
 from knowledge.models import BotSettings, KnowledgeChunk, Rule
 from llm.models import LLMConfig
 from platforms.models import Channel
+from profiles.images import profile_filename, render_profile_card, render_transcript_image
+from profiles.models import TravelProfile
 
 from .forms import (
     BotSettingsForm,
@@ -21,6 +25,7 @@ from .forms import (
     KnowledgeChunkForm,
     LLMConfigForm,
     RuleForm,
+    TravelProfileForm,
 )
 
 
@@ -381,3 +386,170 @@ def bot_settings(request):
         form.save()
         return redirect("dashboard-bot-settings")
     return render(request, "dashboard/bot_settings.html", {"form": form})
+
+
+# ---------- Travel Profiles ----------
+
+PROFILE_EXPORT_HEADERS = [
+    "Profile Number", "Name", "WhatsApp", "Nationality", "Residence Country",
+    "GCC Residence Card", "Card Expiry", "Travel Date", "Trip Days", "Adults",
+    "Children Ages", "Total Travellers", "Channel", "Complete", "Completed At",
+    "Last Updated",
+]
+
+
+def _filtered_profiles(request):
+    """Shared query for the list page and both exports (filters stay in sync)."""
+    qs = TravelProfile.objects.select_related("customer", "customer__channel")
+    channel_id = (request.GET.get("channel") or "").strip()
+    if channel_id:
+        try:
+            uuid_lib.UUID(channel_id)
+            qs = qs.filter(customer__channel_id=channel_id)
+        except ValueError:
+            pass
+    completeness = (request.GET.get("complete") or "").strip()
+    if completeness == "yes":
+        qs = qs.filter(is_complete=True)
+    elif completeness == "no":
+        qs = qs.filter(is_complete=False)
+    q = (request.GET.get("q") or "").strip()
+    if q:
+        qs = qs.filter(
+            Q(profile_number__icontains=q)
+            | Q(full_name__icontains=q)
+            | Q(whatsapp_number__icontains=q)
+            | Q(nationality__icontains=q)
+            | Q(residence_country__icontains=q)
+            | Q(customer__display_name__icontains=q)
+            | Q(customer__email__icontains=q)
+        )
+    return qs
+
+
+@staff_required
+def profile_list(request):
+    profiles = _filtered_profiles(request)
+    return render(request, "dashboard/profile_list.html", {
+        "profiles": profiles[:200],
+        "channels": Channel.objects.all(),
+        "selected_channel": (request.GET.get("channel") or "").strip(),
+        "selected_complete": (request.GET.get("complete") or "").strip(),
+        "selected_query": (request.GET.get("q") or "").strip(),
+        "querystring": request.GET.urlencode(),
+        "total_count": profiles.count(),
+    })
+
+
+def _profile_row(p) -> list:
+    card = ""
+    if p.gcc_residence_card is True:
+        card = "Yes"
+    elif p.gcc_residence_card is False:
+        card = "No"
+    return [
+        p.profile_number,
+        p.full_name,
+        p.whatsapp_number,
+        p.nationality,
+        p.residence_country,
+        card,
+        str(p.residence_card_expiry or ""),
+        str(p.travel_date or ""),
+        p.trip_days if p.trip_days else "",
+        p.adults if p.adults else "",
+        p.children_ages,
+        p.total_travellers or "",
+        p.customer.channel.name if p.customer.channel_id else "",
+        "Yes" if p.is_complete else "No",
+        timezone.localtime(p.completed_at).strftime("%Y-%m-%d %H:%M") if p.completed_at else "",
+        timezone.localtime(p.updated_at).strftime("%Y-%m-%d %H:%M"),
+    ]
+
+
+@staff_required
+def profile_export_csv(request):
+    profiles = _filtered_profiles(request)
+    response = HttpResponse(content_type="text/csv")
+    response["Content-Disposition"] = (
+        f'attachment; filename="travel_profiles_{timezone.now():%Y%m%d}.csv"')
+    writer = csv.writer(response)
+    writer.writerow(PROFILE_EXPORT_HEADERS)
+    for profile in profiles:
+        writer.writerow([_csv_safe(value) for value in _profile_row(profile)])
+    return response
+
+
+@staff_required
+def profile_export_xlsx(request):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    profiles = _filtered_profiles(request)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Travel Profiles"
+    ws.append(PROFILE_EXPORT_HEADERS)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    for profile in profiles:
+        ws.append([str(value) if value is not None else "" for value in _profile_row(profile)])
+    for idx, column in enumerate(ws.columns, start=1):
+        longest = max((len(str(c.value)) for c in column if c.value is not None), default=0)
+        ws.column_dimensions[get_column_letter(idx)].width = min(longest + 2, 34)
+    buf = io.BytesIO()
+    wb.save(buf)
+    response = HttpResponse(
+        buf.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = (
+        f'attachment; filename="travel_profiles_{timezone.now():%Y%m%d}.xlsx"')
+    return response
+
+
+@staff_required
+def profile_detail(request, pk):
+    profile = get_object_or_404(
+        TravelProfile.objects.select_related("customer", "customer__channel"), pk=pk)
+    form = TravelProfileForm(request.POST or None, instance=profile)
+    if request.method == "POST" and form.is_valid():
+        form.save()
+        return redirect("dashboard-profile-detail", pk=profile.pk)
+    latest_conversation = profile.customer.conversations.order_by("-last_message_at").first()
+    return render(request, "dashboard/profile_detail.html", {
+        "profile": profile,
+        "form": form,
+        "missing_fields": profile.missing_fields(),
+        "latest_conversation": latest_conversation,
+    })
+
+
+def _png_response(png_bytes: bytes, filename: str) -> HttpResponse:
+    response = HttpResponse(png_bytes, content_type="image/png")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@staff_required
+def profile_card_png(request, pk):
+    profile = get_object_or_404(
+        TravelProfile.objects.select_related("customer", "customer__channel"), pk=pk)
+    return _png_response(render_profile_card(profile), profile_filename(profile))
+
+
+@staff_required
+def profile_transcript_png(request, pk):
+    profile = get_object_or_404(
+        TravelProfile.objects.select_related("customer", "customer__channel"), pk=pk)
+    messages = list(
+        Message.objects.filter(conversation__customer=profile.customer)
+        .select_related("conversation").order_by("created_at")
+    )
+    name = profile.full_name or profile.customer.display_name or "visitor"
+    title = f"{profile.profile_number or 'Travel lead'} — {name}"
+    return _png_response(
+        render_transcript_image(messages, title=title),
+        profile_filename(profile, suffix="_transcript"),
+    )

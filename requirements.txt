@@ -11,3 +11,5 @@ requests
 sentence-transformers
 python-dotenv
 whitenoise
+openpyxl
+Pillow

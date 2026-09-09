@@ -1,9 +1,15 @@
-{# HTMX response for /send/. Optimistic UI: chat.html appends the visitor's own
-   bubble the instant they submit, so this fragment must contain ONLY what the
-   client can't know yet — the bot's reply (or an error bubble). Returning the
-   visitor bubble here would duplicate it. #}
+{% comment %}
+HTMX response for /send/. Optimistic UI: chat.html appends the visitor's own
+bubble the instant they submit, so this fragment must contain ONLY what the
+client can't know yet — the bot's reply (or an error bubble). Returning the
+visitor bubble here would duplicate it. NOTE: a `{# #}` comment cannot span
+multiple lines in Django templates — it leaks as literal text into the page
+(the live-widget bug of 2026-09-09) — so multi-line notes use this tag instead.
+{% endcomment %}
 {% if pair %}
-  <div class="msg-row bot"><div class="bubble bot">{{ reply.content }}</div></div>
+  {% for reply in replies %}
+    <div class="msg-row bot"><div class="bubble bot">{{ reply.content }}</div></div>
+  {% endfor %}
 {% else %}
   <div class="msg-row bot"><div class="bubble error">{{ error }}</div></div>
 {% endif %}

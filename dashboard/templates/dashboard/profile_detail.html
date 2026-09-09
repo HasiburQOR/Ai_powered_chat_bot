@@ -1,0 +1,77 @@
+{% extends "dashboard/base.html" %}
+{% block title %}{{ profile.profile_number }}{% endblock %}
+{% block content %}
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+  <div>
+    <div class="flex items-center gap-3">
+      <h1 class="text-2xl md:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-3">
+        <span>🧳</span> {{ profile.profile_number }}
+      </h1>
+      {% if profile.is_complete %}
+        <span class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">✓ Complete</span>
+      {% else %}
+        <span class="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-700 border border-amber-500/30">⏳ In progress</span>
+      {% endif %}
+    </div>
+    <p class="text-slate-500 text-sm mt-1">
+      {{ profile.customer.display_name|default:"Visitor" }} via {{ profile.customer.channel.name }}
+      {% if latest_conversation %} · <a class="text-indigo-600 font-semibold hover:underline" href="{% url 'dashboard-conversation-detail' latest_conversation.pk %}">open conversation</a>{% endif %}
+    </p>
+  </div>
+  <div class="flex items-center gap-3 flex-wrap">
+    <a href="{% url 'dashboard-profile-card' profile.pk %}"
+       class="px-4 py-2 bg-white hover:bg-slate-50 text-indigo-700 font-semibold rounded-xl text-sm transition-all shadow-sm border border-indigo-200">🖼 Profile card (PNG)</a>
+    <a href="{% url 'dashboard-profile-transcript' profile.pk %}"
+       class="px-4 py-2 bg-white hover:bg-slate-50 text-indigo-700 font-semibold rounded-xl text-sm transition-all shadow-sm border border-indigo-200">💬 Chat transcript (PNG)</a>
+    <a href="{% url 'dashboard-profiles' %}"
+       class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-xl text-sm transition-all shadow-sm">← All profiles</a>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+  <div class="lg:col-span-3 bg-white/90 backdrop-blur border border-slate-200/80 rounded-2xl shadow-sm p-6 md:p-8">
+    <h2 class="text-xs font-bold uppercase tracking-wider text-slate-500 mb-4">Captured details</h2>
+    <form method="post" class="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+      {% csrf_token %}
+      {% for field in form %}
+        <div class="{% if field.name == 'full_name' or field.name == 'whatsapp_number' or field.name == 'children_ages' %}md:col-span-2{% endif %}">
+          <label for="{{ field.id_for_label }}" class="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">{{ field.label }}</label>
+          {{ field }}
+          {% for error in field.errors %}
+            <p class="text-xs text-rose-600 mt-1 font-semibold">{{ error }}</p>
+          {% endfor %}
+        </div>
+      {% endfor %}
+      <div class="md:col-span-2 pt-4 border-t border-slate-100 flex items-center justify-between gap-3">
+        <p class="text-xs text-slate-400">Last updated {{ profile.updated_at|date:"d M Y H:i" }} (UTC)</p>
+        <button type="submit"
+                class="px-6 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold rounded-xl text-sm shadow-md shadow-indigo-500/20 transition-all cursor-pointer">
+          💾 Save changes
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div class="lg:col-span-2 space-y-6">
+    <div class="bg-white/90 backdrop-blur border border-slate-200/80 rounded-2xl shadow-sm p-6">
+      <h2 class="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Customer contact</h2>
+      <dl class="space-y-2 text-sm">
+        <div class="flex justify-between gap-3"><dt class="text-slate-500 font-semibold">Email</dt><dd class="text-slate-900 font-medium text-right break-all">{{ profile.customer.email|default:"—" }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-slate-500 font-semibold">Phone</dt><dd class="text-slate-900 font-medium text-right">{{ profile.customer.phone|default:"—" }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-slate-500 font-semibold">Profile created</dt><dd class="text-slate-900 font-medium text-right">{{ profile.created_at|date:"d M Y" }}</dd></div>
+        {% if profile.completed_at %}
+          <div class="flex justify-between gap-3"><dt class="text-slate-500 font-semibold">Completed</dt><dd class="text-emerald-600 font-semibold text-right">{{ profile.completed_at|date:"d M Y" }}</dd></div>
+        {% endif %}
+      </dl>
+    </div>
+    {% if not profile.is_complete %}
+      <div class="bg-amber-50/80 border border-amber-200 rounded-2xl p-6">
+        <h2 class="text-xs font-bold uppercase tracking-wider text-amber-700 mb-2">Still missing</h2>
+        <ul class="text-sm text-amber-800 font-medium space-y-1">
+          {% for label in missing_fields %}<li>• {{ label }}</li>{% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
