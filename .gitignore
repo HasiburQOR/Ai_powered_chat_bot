@@ -23,3 +23,4 @@ celerybeat-schedule*
 # OS
 .DS_Store
 Thumbs.db
+build_out.txt
