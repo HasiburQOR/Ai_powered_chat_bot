@@ -14,9 +14,15 @@ class Customer(models.Model):
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='customers')
     external_id = models.CharField(max_length=255, help_text='IGSID, PSID, or widget session/visitor ID')
     display_name = models.CharField(max_length=255, blank=True)
+    email = models.EmailField(blank=True, help_text='Provided by the visitor via the widget pre-chat form')
+    phone = models.CharField(max_length=50, blank=True, help_text='Provided by the visitor via the widget pre-chat form')
     memory_summary = models.TextField(blank=True, help_text='Regenerated periodically by Celery task')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def has_contact_details(self) -> bool:
+        return bool(self.email or self.phone)
 
     class Meta:
         constraints = [

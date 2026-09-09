@@ -12,9 +12,9 @@ class MessageInline(admin.TabularInline):
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    list_display = ('display_name', 'channel', 'external_id', 'created_at')
+    list_display = ('display_name', 'email', 'phone', 'channel', 'external_id', 'created_at')
     list_filter = ('channel',)
-    search_fields = ('display_name', 'external_id')
+    search_fields = ('display_name', 'external_id', 'email', 'phone')
     readonly_fields = ('created_at', 'updated_at')
 
 

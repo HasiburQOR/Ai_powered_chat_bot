@@ -55,6 +55,14 @@
         <span class="font-bold text-slate-900">{{ conversation.customer.display_name|default:"—" }}</span>
       </p>
       <p class="flex justify-between items-center text-xs">
+        <span class="text-slate-500 font-medium">Email:</span>
+        <span class="font-bold text-slate-900">{{ conversation.customer.email|default:"—" }}</span>
+      </p>
+      <p class="flex justify-between items-center text-xs">
+        <span class="text-slate-500 font-medium">Phone:</span>
+        <span class="font-bold text-slate-900">{{ conversation.customer.phone|default:"—" }}</span>
+      </p>
+      <p class="flex justify-between items-center text-xs">
         <span class="text-slate-500 font-medium">External ID:</span>
         <code class="px-2 py-0.5 bg-slate-100 border border-slate-200 rounded text-slate-800 font-mono text-[11px]">{{ conversation.customer.external_id|truncatechars:18 }}</code>
       </p>

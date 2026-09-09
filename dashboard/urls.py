@@ -24,9 +24,11 @@ urlpatterns = [
     path("channels/", views.channel_list, name="dashboard-channels"),
     path("channels/new/", views.channel_create, name="dashboard-channel-create"),
     path("channels/<uuid:pk>/edit/", views.channel_update, name="dashboard-channel-edit"),
-    path("channels/<uuid:pk>/delete/", views.channel_delete, name="dashboard-channel-deactivate"),
+    path("channels/<uuid:pk>/deactivate/", views.channel_deactivate, name="dashboard-channel-deactivate"),
+    path("channels/<uuid:pk>/delete/", views.channel_delete, name="dashboard-channel-delete"),
 
     path("conversations/", views.conversation_list, name="dashboard-conversations"),
+    path("conversations/export/", views.conversation_export, name="dashboard-conversation-export"),
     path("conversations/<uuid:pk>/", views.conversation_detail, name="dashboard-conversation-detail"),
     path("conversations/<uuid:pk>/update-status/", views.conversation_update_status, name="dashboard-conversation-update-status"),
 

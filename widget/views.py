@@ -1,5 +1,6 @@
 import uuid
 
+from django import forms
 from django.core.cache import cache
 from django.http import HttpResponse, HttpResponseForbidden
 from django.shortcuts import render
@@ -14,6 +15,37 @@ from platforms.models import Channel
 # Phase 10 hardening: basic per-session throttle on the send endpoint.
 RATE_LIMIT_MESSAGES = 20
 RATE_LIMIT_SECONDS = 60
+
+_INPUT_CLASS = (
+    "w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 "
+    "placeholder:text-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+)
+
+
+class LeadDetailsForm(forms.Form):
+    """Pre-chat capture — the visitor's contact details before the bot starts.
+
+    Name and email are required ("the necessary details"); phone is optional.
+    """
+
+    name = forms.CharField(
+        max_length=255,
+        widget=forms.TextInput(attrs={
+            "class": _INPUT_CLASS, "placeholder": "Jane Doe", "autocomplete": "name",
+        }),
+    )
+    email = forms.EmailField(
+        widget=forms.EmailInput(attrs={
+            "class": _INPUT_CLASS, "placeholder": "jane@example.com", "autocomplete": "email",
+        }),
+    )
+    phone = forms.CharField(
+        max_length=50,
+        required=False,
+        widget=forms.TextInput(attrs={
+            "class": _INPUT_CLASS, "placeholder": "+1 555 123 4567 (optional)", "autocomplete": "tel",
+        }),
+    )
 
 
 def _get_wordpress_channel(site_key):
@@ -84,23 +116,84 @@ def chat(request):
     if conversation is None:
         conversation = Conversation.objects.create(customer=customer, last_message_at=timezone.now())
 
+    collect_details = bool((channel.credentials or {}).get("collect_lead_details", True))
+    context = _chat_panel_context(channel, conversation, session_id, site_key)
+    # First-time visitors must provide contact details before the chat opens
+    # (unless the channel opts out via collect_lead_details: false).
+    context["needs_details"] = collect_details and not customer.email
+    if context["needs_details"]:
+        context["form"] = LeadDetailsForm()
+
     response = render(
         request,
         "widget/chat.html",
-        {
-            "channel": channel,
-            "conversation": conversation,
-            "messages": conversation.messages.all(),
-            "session_id": session_id,
-            "site_key": site_key,
-            "welcome_message": (channel.credentials or {}).get("welcome_message", "Hi! How can we help?"),
-            "theme_color": (channel.credentials or {}).get("theme_color", "#4f46e5"),
-        },
+        context,
     )
     if allowed_domain:
         response["Content-Security-Policy"] = f"frame-ancestors {allowed_domain}"
     response.set_cookie(f"widget_session_{site_key}", session_id, max_age=60 * 60 * 24 * 365, samesite="Lax")
     return response
+
+
+def _chat_panel_context(channel, conversation, session_id, site_key) -> dict:
+    """Shared context for the chat page and the chat-panel partial."""
+    return {
+        "channel": channel,
+        "conversation": conversation,
+        "messages": conversation.messages.all(),
+        "session_id": session_id,
+        "site_key": site_key,
+        "welcome_message": (channel.credentials or {}).get("welcome_message", "Hi! How can we help?"),
+        "theme_color": (channel.credentials or {}).get("theme_color", "#4f46e5"),
+    }
+
+
+@csrf_exempt
+@xframe_options_exempt
+def submit_details(request, session_id):
+    """HTMX endpoint for the pre-chat lead form. Saves the visitor's contact
+    details on their Customer row and swaps in the full chat UI (hx-target
+    '#widget-root'). Re-renders the form with errors on invalid input (422)."""
+    if request.method != "POST":
+        return HttpResponseForbidden("POST only")
+
+    site_key = request.POST.get("site_key", "")
+    channel = _get_wordpress_channel(site_key)
+    if channel is None:
+        return HttpResponseForbidden("Unknown or inactive site key.")
+
+    customer, _ = Customer.objects.get_or_create(
+        channel=channel, external_id=session_id, defaults={"display_name": "Website visitor"}
+    )
+    form = LeadDetailsForm(request.POST)
+    if not form.is_valid():
+        return render(
+            request,
+            "widget/partials/lead_form.html",
+            {
+                "form": form,
+                "channel": channel,
+                "session_id": session_id,
+                "site_key": site_key,
+                "theme_color": (channel.credentials or {}).get("theme_color", "#4f46e5"),
+            },
+            status=422,
+        )
+
+    customer.display_name = form.cleaned_data["name"]
+    customer.email = form.cleaned_data["email"]
+    customer.phone = form.cleaned_data.get("phone", "")
+    customer.save(update_fields=["display_name", "email", "phone", "updated_at"])
+
+    conversation = customer.conversations.order_by("-last_message_at").first()
+    if conversation is None:
+        conversation = Conversation.objects.create(customer=customer, last_message_at=timezone.now())
+
+    return render(
+        request,
+        "widget/partials/chat_panel.html",
+        _chat_panel_context(channel, conversation, session_id, site_key),
+    )
 
 
 def _rate_limited(session_id) -> bool:

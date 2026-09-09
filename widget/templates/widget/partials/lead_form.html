@@ -1,0 +1,31 @@
+{# Pre-chat lead form for first-time visitors. On submit the submit_details view replaces #widget-root's innerHTML with the chat panel. #}
+<div class="flex flex-col h-screen bg-gray-100">
+  <header class="p-4 text-white font-semibold" style="background: {{ theme_color }}">
+    {{ channel.name }}
+  </header>
+
+  <div class="flex-1 overflow-y-auto p-5">
+    <p class="text-sm text-gray-600 mb-4">Before we start, please tell us who you are so our team can follow up.</p>
+    <form hx-post="{% url 'widget-details' session_id %}"
+          hx-target="#widget-root"
+          hx-swap="innerHTML"
+          class="space-y-4">
+      <input type="hidden" name="site_key" value="{{ site_key }}">
+      {% for field in form %}
+        <div>
+          <label for="{{ field.id_for_label }}"
+                 class="block text-xs font-bold uppercase tracking-wide text-gray-500 mb-1">
+            {{ field.label }}{% if field.field.required %} *{% endif %}
+          </label>
+          {{ field }}
+          {% for error in field.errors %}
+            <p class="mt-1 text-xs text-red-600">{{ error }}</p>
+          {% endfor %}
+        </div>
+      {% endfor %}
+      <button type="submit"
+              class="w-full text-white rounded-full py-2.5 font-semibold focus:outline-none focus:ring-2 focus:ring-offset-2"
+              style="background: {{ theme_color }}">Start chat</button>
+    </form>
+  </div>
+</div>
