@@ -36,13 +36,73 @@
         document.getElementById('widget-root').style.display = 'none';
       }
     });
-    // Clear the input after each successful send, then keep the log scrolled down.
-    document.body.addEventListener('htmx:afterRequest', function (e) {
-      if (e.detail.elt.tagName === 'FORM') { e.detail.elt.reset(); }
+    // --- Optimistic send --------------------------------------------------
+    // The bot engine (rules → retrieval → LLM) runs synchronously, so the
+    // /send/ round-trip can take seconds. Don't make the visitor stare at a
+    // frozen input: the moment they submit, append their bubble + a typing
+    // indicator and clear the input; swap the dots for the bot reply when the
+    // fragment arrives. The /send/ fragment carries ONLY the bot reply
+    // (bubbles.html), so the optimistically-added visitor bubble is never
+    // duplicated.
+    function scrollLog() {
       var log = document.getElementById('chat-log');
       if (log) { log.scrollTop = log.scrollHeight; }
+    }
+    function byId(id) { return document.getElementById(id); }
+
+    document.body.addEventListener('htmx:beforeRequest', function (e) {
+      var form = e.detail.elt;
+      if (!form.classList || !form.classList.contains('chat-form')) { return; }
+      var input = form.querySelector('[name="message"]');
+      var text = ((input && input.value) || '').trim();
+      if (!text) { return; }  // empty submits are acked silently by the server
+      form._pendingText = text;
+      var log = byId('chat-log');
+      if (!log) { return; }
+      var mine = document.createElement('div');
+      mine.id = 'optimistic-msg';
+      mine.className = 'msg-row visitor';
+      mine.innerHTML = '<div class="bubble visitor" style="background: var(--theme, #4f46e5)"></div>';
+      mine.firstChild.textContent = text;  // textContent — user text is never parsed as HTML
+      var dots = document.createElement('div');
+      dots.id = 'typing-msg';
+      dots.className = 'msg-row bot';
+      dots.innerHTML = '<div class="bubble bot typing"><span></span><span></span><span></span></div>';
+      log.appendChild(mine);
+      log.appendChild(dots);
+      input.value = '';
+      scrollLog();
     });
-    var initialLog = document.getElementById('chat-log');
+
+    // Response arrived — drop the dots just before the reply fragment appends.
+    document.body.addEventListener('htmx:beforeSwap', function () {
+      var dots = byId('typing-msg');
+      if (dots) { dots.remove(); }
+    });
+
+    document.body.addEventListener('htmx:afterRequest', function (e) {
+      var form = e.detail.elt;
+      var isSendForm = form && form.classList && form.classList.contains('chat-form');
+      if (isSendForm) {
+        if (e.detail.successful) {
+          form.reset();  // already cleared optimistically; tidy validation state
+          delete form._pendingText;
+        } else {
+          // Network/5xx: nothing was persisted — un-optimistically put the
+          // visitor's text back so they can retry without retyping.
+          var mine = byId('optimistic-msg');
+          if (mine) { mine.remove(); }
+          var dots = byId('typing-msg');
+          if (dots) { dots.remove(); }
+          var input = form.querySelector('[name="message"]');
+          if (input && !input.value && form._pendingText) { input.value = form._pendingText; }
+          delete form._pendingText;
+        }
+      }
+      scrollLog();
+    });
+
+    var initialLog = byId('chat-log');
     if (initialLog) { initialLog.scrollTop = 1e9; }
   </script>
 </body>

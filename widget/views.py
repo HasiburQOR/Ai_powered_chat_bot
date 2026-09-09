@@ -195,6 +195,7 @@ def _chat_panel_context(channel, conversation, session_id, site_key) -> dict:
         "site_key": site_key,
         "welcome_message": (channel.credentials or {}).get("welcome_message", "Hi! How can we help?"),
         "theme_color": (channel.credentials or {}).get("theme_color", "#4f46e5"),
+        "bot_name": (channel.credentials or {}).get("bot_name", "Assistant"),
     }
 
 
@@ -228,6 +229,7 @@ def submit_details(request, session_id):
                 "session_id": session_id,
                 "site_key": site_key,
                 "theme_color": (channel.credentials or {}).get("theme_color", "#4f46e5"),
+                "bot_name": (channel.credentials or {}).get("bot_name", "Assistant"),
             },
             status=422,
         )
@@ -261,7 +263,9 @@ def _rate_limited(session_id) -> bool:
 @xframe_options_exempt
 def send_message(request, session_id):
     """HTMX endpoint — form-encoded `message`. Runs the bot engine synchronously
-    and returns an HTML fragment of the new bubbles (hx-swap='beforeend')."""
+    and returns an HTML fragment with the bot's reply bubble (hx-swap='beforeend').
+    The visitor's own bubble is added client-side at submit (optimistic UI), so
+    it must NOT be part of this fragment."""
     if request.method != "POST":
         return HttpResponseForbidden("POST only")
 
@@ -297,6 +301,5 @@ def send_message(request, session_id):
 
     return render(request, "widget/partials/bubbles.html", {
         "pair": True,
-        "inbound_text": text,
         "reply": reply,
     })

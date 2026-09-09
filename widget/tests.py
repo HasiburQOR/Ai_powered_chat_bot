@@ -1,7 +1,7 @@
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from conversations.models import Customer
+from conversations.models import Customer, Message
 from platforms.models import Channel
 
 
@@ -88,14 +88,39 @@ class WidgetLeadDetailsTests(TestCase):
         self.assertContains(resp, 'id="chat-log"')
         self.assertNotContains(resp, "/details/")
 
-    def test_send_message_still_works(self):
+    def test_send_message_fragment_has_no_visitor_bubble(self):
+        """Optimistic UI: chat.html adds the visitor's bubble client-side the
+        instant they submit, so the /send/ fragment must contain ONLY the bot
+        reply — echoing the visitor bubble back would duplicate it."""
         self._visit()
         resp = self.client.post(
             reverse("widget-send", args=[self._session_id()]),
             {"site_key": "sk-test", "message": "Hi there"},
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "Hi there")
+        body = resp.content.decode()
+        self.assertNotIn("msg-row visitor", body)  # visitor bubble is client-side now
+        self.assertIn("msg-row bot", body)         # bot reply still appended server-side
+        # Both sides persisted as before.
+        self.assertEqual(
+            Message.objects.filter(conversation__customer__channel=self.channel).count(), 2,
+        )
+
+    def test_bot_name_from_credentials_with_default_fallback(self):
+        """The widget header shows the channel's bot_name credential (per-site
+        branding), never the admin-facing channel name; unset → 'Assistant'."""
+        Channel.objects.create(
+            name="Branded Site",
+            channel_type="wordpress",
+            is_active=True,
+            credentials={"site_key": "sk-branded", "bot_name": "NovaBot"},
+        )
+        resp = self.client.get(reverse("widget-chat"), {"site_key": "sk-branded"})
+        self.assertContains(resp, "NovaBot")          # branded name in the header
+        self.assertNotContains(resp, "Branded Site")  # admin label doesn't leak
+
+        resp = self.client.get(reverse("widget-chat"), {"site_key": "sk-test"})
+        self.assertContains(resp, ">Assistant<")      # default when bot_name is unset
 
     def test_visitor_id_keeps_one_customer_without_cookies(self):
         """Browsers drop cookies inside third-party iframes; the host page's

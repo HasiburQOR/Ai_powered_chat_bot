@@ -1,5 +1,8 @@
+{# HTMX response for /send/. Optimistic UI: chat.html appends the visitor's own
+   bubble the instant they submit, so this fragment must contain ONLY what the
+   client can't know yet — the bot's reply (or an error bubble). Returning the
+   visitor bubble here would duplicate it. #}
 {% if pair %}
-  <div class="msg-row visitor"><div class="bubble visitor" style="background: {{ theme_color|default:'#4f46e5' }}">{{ inbound_text }}</div></div>
   <div class="msg-row bot"><div class="bubble bot">{{ reply.content }}</div></div>
 {% else %}
   <div class="msg-row bot"><div class="bubble error">{{ error }}</div></div>

@@ -272,6 +272,8 @@ In the WordPress page (or site-wide footer via your theme / a header-footer plug
 
 Create the WordPress channel in the dashboard first (Channels → New) — the `site_key` and the customer's `allowed_domain` (e.g. `https://www.yourcompany.com`) live in its credentials. The domain check scopes iframe embedding to that one site.
 
+The widget header shows the channel's `bot_name` credential (defaults to `"Assistant"`) — add e.g. `"bot_name": "Binoma Assistant"` to the channel's credentials JSON to brand it per site. Each channel's JSON is independent, so every site can show a different bot name.
+
 ## 9. Go-live test checklist
 
 - [ ] `https://your-domain/` loads (status page)

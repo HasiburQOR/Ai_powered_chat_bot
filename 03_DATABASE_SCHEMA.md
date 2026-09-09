@@ -23,7 +23,7 @@ The connection to one external surface (one Instagram account, one Messenger pag
 **`credentials` shape by `channel_type`:**
 - `instagram`: `{"page_id", "ig_business_id", "page_access_token", "verify_token"}`
 - `messenger`: `{"page_id", "page_access_token", "verify_token", "app_secret"}`
-- `wordpress`: `{"site_key", "allowed_domain", "welcome_message", "theme_color", "icon_position"}`
+- `wordpress`: `{"site_key", "allowed_domain", "bot_name", "welcome_message", "theme_color", "icon_position"}`
 
 **CRUD:** full, but **delete is soft** (`is_active=False`) — `Conversation` rows reference `Channel` via `Customer`, so a hard delete would orphan history. Dashboard delete action should confirm and then deactivate, not `DELETE FROM`.
 

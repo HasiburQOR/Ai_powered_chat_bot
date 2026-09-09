@@ -43,9 +43,9 @@ Renders the full chat UI (HTMX-powered) inside the iframe.
 ### `POST /widget/chat/<session_id>/send/`
 HTMX endpoint — form-encoded `message` field.
 1. Save the inbound `Message`.
-2. Run the bot engine (rules → retrieval → LLM) — can run synchronously here since there's no external retry policy to protect against, just keep the LLM call timeout sane (e.g. 20–30s) and show a loading state via `hx-indicator`.
+2. Run the bot engine (rules → retrieval → LLM) — can run synchronously here since there's no external retry policy to protect against, just keep the LLM call timeout sane (e.g. 20–30s). Round-trip latency is masked client-side: the widget appends the visitor's bubble + a typing indicator the instant they submit (optimistic UI, see step 4).
 3. Save the outbound `Message`.
-4. Return an HTML fragment: the new customer bubble + bot reply bubble. HTMX swaps it in with `hx-swap="beforeend"` on the message list container, and the response can include an out-of-band swap to clear the input field.
+4. Return an HTML fragment with **only the bot reply bubble** (or an error bubble, e.g. rate limit) — the visitor's own bubble was already added client-side at submit, so echoing it back would duplicate it. HTMX swaps it in with `hx-swap="beforeend"` on the message list container.
 
 ## 3. Dashboard (internal, staff-only, HTMX CRUD)
 

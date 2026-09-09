@@ -14,7 +14,7 @@ body.chat-widget {
 }
 
 #widget-root.widget-root {
-  position: relative;          /* anchors .send-indicator */
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -139,16 +139,24 @@ body.chat-widget {
   cursor: pointer;
 }
 
-/* htmx request indicator (redundant with htmx's own injected style on purpose:
-   it must work even if the script is slow to evaluate) */
-.htmx-indicator { opacity: 0; }
-.htmx-request .htmx-indicator,
-.htmx-request.htmx-indicator { opacity: 1; }
-.send-indicator {
-  position: absolute;
-  bottom: 84px;
-  right: 24px;
-  font-size: 13px;
-  color: #6b7280;
-  pointer-events: none;
+/* In-log typing indicator (three bouncing dots) — appended optimistically by
+   chat.html the moment the visitor submits, removed when the reply fragment
+   arrives (or on failure). */
+.bubble.typing { display: inline-flex; align-items: center; gap: 4px; }
+.bubble.typing span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9ca3af;
+  animation: typing-bounce 1.2s infinite ease-in-out;
 }
+.bubble.typing span:nth-child(2) { animation-delay: 0.15s; }
+.bubble.typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* While a send is in flight, dim and disable Send so the visitor can't
+   double-post (htmx puts .htmx-request on the form for the duration). */
+.chat-form.htmx-request .chat-send { opacity: 0.55; pointer-events: none; }

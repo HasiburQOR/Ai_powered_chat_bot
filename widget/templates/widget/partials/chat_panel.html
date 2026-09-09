@@ -1,6 +1,6 @@
 {# The chat UI. Rendered both by the chat page and as the HTMX response that replaces the lead form (see submit_details). #}
 <header class="chat-header" style="background: {{ theme_color|default:'#4f46e5' }}">
-  <span>{{ channel.name }}</span>
+  <span>{{ bot_name }}</span>
   <button type="button" class="chat-close" aria-label="Close chat" title="Close">&#10005;</button>
 </header>
 
@@ -17,10 +17,10 @@
   <div class="msg-row bot"><div class="bubble bot">{{ welcome_message }}</div></div>
 </div>
 
+{# No hx-indicator needed: chat.html appends an in-log typing bubble optimistically at submit. #}
 <form hx-post="{% url 'widget-send' session_id %}"
       hx-target="#chat-log"
       hx-swap="beforeend"
-      hx-indicator="#send-indicator"
       class="chat-form">
   <input type="hidden" name="site_key" value="{{ site_key }}">
   <input type="text" name="message" autocomplete="off" required
@@ -28,5 +28,3 @@
          placeholder="Type your message…">
   <button type="submit" class="chat-send" style="background: {{ theme_color|default:'#4f46e5' }}">Send</button>
 </form>
-
-<div id="send-indicator" class="htmx-indicator send-indicator">Bot is typing…</div>
