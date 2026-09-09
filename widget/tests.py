@@ -1,4 +1,4 @@
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.urls import reverse
 
 from conversations.models import Customer
@@ -32,10 +32,9 @@ class WidgetLeadDetailsTests(TestCase):
         self.assertContains(resp, 'name="phone"')
         self.assertNotContains(resp, 'id="chat-log"')
 
-        # A customer row exists but has no contact details yet.
-        customer = Customer.objects.get(channel=self.channel)
-        self.assertEqual(customer.email, "")
-        self.assertFalse(customer.has_contact_details)
+        # A page view alone must not create any rows — drive-by iframe loads
+        # would otherwise flood the dashboard with empty visitor threads.
+        self.assertFalse(Customer.objects.filter(channel=self.channel).exists())
 
     def test_submit_details_saves_customer_and_swaps_in_chat(self):
         self._visit()
@@ -97,3 +96,49 @@ class WidgetLeadDetailsTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Hi there")
+
+    def test_visitor_id_keeps_one_customer_without_cookies(self):
+        """Browsers drop cookies inside third-party iframes; the host page's
+        localStorage-backed ?v= id must keep the same visitor on ONE Customer
+        with ONE Conversation across visits, and skip the lead form on return."""
+        vid = "v1s2t3u4v5w6x7y8"
+        self.client.get(reverse("widget-chat"), {"site_key": "sk-test", "v": vid})
+        self.client.post(
+            reverse("widget-details", args=[vid]),
+            {"site_key": "sk-test", "name": "Jane", "email": "jane@example.com"},
+        )
+        self.client.post(
+            reverse("widget-send", args=[vid]),
+            {"site_key": "sk-test", "message": "Hi again"},
+        )
+
+        # Second visit carrying the same v id but NO cookies at all (fresh
+        # client simulates a cookie-blocking third-party iframe).
+        cookieless = Client()
+        resp = cookieless.get(reverse("widget-chat"), {"site_key": "sk-test", "v": vid})
+        self.assertNotContains(resp, "/details/")  # returning visitor skips the form
+        self.assertContains(resp, "Hi again")      # prior history still visible
+
+        self.assertEqual(Customer.objects.filter(channel=self.channel).count(), 1)
+        customer = Customer.objects.get(channel=self.channel)
+        self.assertEqual(customer.email, "jane@example.com")
+        self.assertEqual(customer.conversations.count(), 1)
+        self.assertEqual(customer.conversations.get().messages.count(), 2)  # visitor + bot reply
+
+    def test_garbage_session_id_is_rejected(self):
+        """The <str:session_id> converter accepts anything; junk must never
+        reach external_id (a wrong form action once created a customer named
+        "details")."""
+        resp = self.client.post(
+            reverse("widget-send", args=["!!!not-an-id!!!"]),
+            {"site_key": "sk-test", "message": "Hi"},
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(Customer.objects.filter(channel=self.channel).exists())
+
+        resp = self.client.post(
+            reverse("widget-details", args=["!!!not-an-id!!!"]),
+            {"site_key": "sk-test", "name": "Jane", "email": "jane@example.com"},
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.assertFalse(Customer.objects.filter(channel=self.channel).exists())

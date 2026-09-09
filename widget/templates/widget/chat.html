@@ -5,12 +5,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chat</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  {% comment %}
+  Fully self-contained: no third-party CDNs. cdn.tailwindcss.com / unpkg.com
+  are routinely blocked inside third-party iframes (ad-blockers, privacy
+  extensions, host-page CSP), which used to collapse the whole widget into
+  unstyled bars. Styles live in /static/css/widget.css, htmx in /static/js.
+  {% endcomment %}
+  <link rel="stylesheet" href="{% static 'css/widget.css' %}">
+  <script src="{% static 'js/htmx.min.js' %}" defer></script>
 </head>
-<body class="bg-gray-100 h-screen flex flex-col">
+<body class="chat-widget">
   {# htmx swaps #widget-root's innerHTML between the pre-chat lead form and the chat panel #}
-  <div id="widget-root" class="flex flex-col h-screen">
+  <div id="widget-root" class="widget-root" style="--theme: {{ theme_color|default:'#4f46e5' }}">
     {% if needs_details %}
       {% include "widget/partials/lead_form.html" %}
     {% else %}
@@ -19,6 +25,17 @@
   </div>
 
   <script>
+    // The ✕ in the header asks the host page to hide the iframe (postMessage
+    // works across origins); fall back to hiding ourselves when the widget
+    // runs first-party, e.g. while testing locally. Event delegation, so it
+    // keeps working after htmx swaps the header in and out.
+    document.body.addEventListener('click', function (e) {
+      var t = e.target;
+      if (t && t.classList && t.classList.contains('chat-close')) {
+        try { window.parent.postMessage({ type: 'chatbot:close' }, '*'); } catch (err) {}
+        document.getElementById('widget-root').style.display = 'none';
+      }
+    });
     // Clear the input after each successful send, then keep the log scrolled down.
     document.body.addEventListener('htmx:afterRequest', function (e) {
       if (e.detail.elt.tagName === 'FORM') { e.detail.elt.reset(); }

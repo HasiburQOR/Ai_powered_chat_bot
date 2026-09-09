@@ -1,31 +1,32 @@
 {# The chat UI. Rendered both by the chat page and as the HTMX response that replaces the lead form (see submit_details). #}
-<header class="p-4 text-white font-semibold" style="background: {{ theme_color }}">
-  {{ channel.name }}
+<header class="chat-header" style="background: {{ theme_color|default:'#4f46e5' }}">
+  <span>{{ channel.name }}</span>
+  <button type="button" class="chat-close" aria-label="Close chat" title="Close">&#10005;</button>
 </header>
 
 <div id="chat-log"
-     class="flex-1 overflow-y-auto p-4 space-y-2"
+     class="chat-log"
      hx-swap="beforeend">
   {% for message in messages %}
     {% if message.sender_type == "customer" %}
-      <div class="flex justify-end"><div class="text-white rounded-2xl px-4 py-2 max-w-[80%]" style="background: {{ theme_color }}">{{ message.content }}</div></div>
+      <div class="msg-row visitor"><div class="bubble visitor" style="background: {{ theme_color|default:'#4f46e5' }}">{{ message.content }}</div></div>
     {% elif message.sender_type == "bot" %}
-      <div class="flex justify-start"><div class="bg-white border rounded-2xl px-4 py-2 max-w-[80%]">{{ message.content }}</div></div>
+      <div class="msg-row bot"><div class="bubble bot">{{ message.content }}</div></div>
     {% endif %}
   {% endfor %}
-  <div class="flex justify-start"><div class="bg-white border rounded-2xl px-4 py-2 max-w-[80%]">{{ welcome_message }}</div></div>
+  <div class="msg-row bot"><div class="bubble bot">{{ welcome_message }}</div></div>
 </div>
 
 <form hx-post="{% url 'widget-send' session_id %}"
       hx-target="#chat-log"
       hx-swap="beforeend"
       hx-indicator="#send-indicator"
-      class="p-4 border-t bg-white flex gap-2">
+      class="chat-form">
   <input type="hidden" name="site_key" value="{{ site_key }}">
   <input type="text" name="message" autocomplete="off" required
-         class="flex-1 border rounded-full px-4 py-2 focus:outline-none focus:ring-2"
+         class="chat-input"
          placeholder="Type your message…">
-  <button type="submit" class="text-white rounded-full px-4 py-2 font-medium" style="background: {{ theme_color }}">Send</button>
+  <button type="submit" class="chat-send" style="background: {{ theme_color|default:'#4f46e5' }}">Send</button>
 </form>
 
-<div id="send-indicator" class="htmx-indicator absolute bottom-20 right-8 text-sm text-gray-500">Bot is typing…</div>
+<div id="send-indicator" class="htmx-indicator send-indicator">Bot is typing…</div>

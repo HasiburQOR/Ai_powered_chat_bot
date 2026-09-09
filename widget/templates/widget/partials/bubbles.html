@@ -1,6 +1,6 @@
 {% if pair %}
-  <div class="flex justify-end"><div class="text-white rounded-2xl px-4 py-2 max-w-[80%]" style="background: {{ theme_color|default:'#4f46e5' }}">{{ inbound_text }}</div></div>
-  <div class="flex justify-start"><div class="bg-white border rounded-2xl px-4 py-2 max-w-[80%]">{{ reply.content }}</div></div>
+  <div class="msg-row visitor"><div class="bubble visitor" style="background: {{ theme_color|default:'#4f46e5' }}">{{ inbound_text }}</div></div>
+  <div class="msg-row bot"><div class="bubble bot">{{ reply.content }}</div></div>
 {% else %}
-  <div class="flex justify-start"><div class="bg-orange-100 border border-orange-300 text-orange-900 rounded-2xl px-4 py-2 max-w-[80%]">{{ error }}</div></div>
+  <div class="msg-row bot"><div class="bubble error">{{ error }}</div></div>
 {% endif %}

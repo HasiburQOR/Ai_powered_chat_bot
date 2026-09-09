@@ -1,3 +1,4 @@
+import re
 import uuid
 
 from django import forms
@@ -55,6 +56,33 @@ def _get_wordpress_channel(site_key):
     return None
 
 
+def _clean_session_id(raw: str) -> str:
+    """Accept only [A-Za-z0-9_-]{1,64}; anything else returns "".
+
+    The <str:session_id> URL converter accepts anything — including stray form
+    field names (a wrong form action once created a Customer with
+    external_id="details"). Strict validation means garbage URLs never mint
+    customer rows: page views fall back to a fresh id, POST endpoints 403.
+    """
+    return raw if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", raw or "") else ""
+
+
+def _ensure_customer_and_conversation(channel, session_id):
+    """Lazily create (or fetch) the Customer and their latest Conversation.
+
+    Only called when the visitor actually engages (submits the lead form or
+    sends a message). A mere widget page view must not write anything, so
+    drive-by iframe loads never flood the dashboard with empty threads.
+    """
+    customer, _ = Customer.objects.get_or_create(
+        channel=channel, external_id=session_id, defaults={"display_name": "Website visitor"}
+    )
+    conversation = customer.conversations.order_by("-last_message_at").first()
+    if conversation is None:
+        conversation = Conversation.objects.create(customer=customer, last_message_at=timezone.now())
+    return customer, conversation
+
+
 def embed_js(request):
     """Vanilla-JS snippet that runs on the host WordPress page. It reads
     data-site-key (required) plus optional data-position="left|right"
@@ -75,8 +103,14 @@ def embed_js(request):
   var side = position === 'left' ? 'left:20px;' : 'right:20px;';
   var theme = script.getAttribute('data-theme') || '#4f46e5';
 
+  var vid;
+  try { vid = localStorage.getItem('chatbot_visitor_id'); } catch (e) {}
+  if (!vid) {
+    vid = 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    try { localStorage.setItem('chatbot_visitor_id', vid); } catch (e) {}
+  }
   var iframe = document.createElement('iframe');
-  iframe.src = origin + '/widget/chat/?site_key=' + encodeURIComponent(siteKey);
+  iframe.src = origin + '/widget/chat/?site_key=' + encodeURIComponent(siteKey) + '&v=' + encodeURIComponent(vid);
   iframe.style.cssText = 'display:none;position:fixed;bottom:90px;' + side + 'width:360px;height:520px;max-height:80vh;border:1px solid #d1d5db;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);z-index:2147483000;background:#fff;';
 
   var button = document.createElement('button');
@@ -87,6 +121,13 @@ def embed_js(request):
   button.addEventListener('click', function () {
     var open = iframe.style.display !== 'none';
     iframe.style.display = open ? 'none' : 'block';
+  });
+
+  // The widget's in-panel close button (✕) asks us to hide the iframe.
+  window.addEventListener('message', function (e) {
+    if (e.origin === origin && e.data && e.data.type === 'chatbot:close') {
+      iframe.style.display = 'none';
+    }
   });
 
   document.body.appendChild(iframe);
@@ -106,21 +147,30 @@ def chat(request):
         return HttpResponseForbidden("Unknown or inactive site key.")
 
     allowed_domain = (channel.credentials or {}).get("allowed_domain", "")
-    session_id = request.COOKIES.get(f"widget_session_{site_key}", "")
-    if not session_id:
-        session_id = uuid.uuid4().hex
-    customer, _ = Customer.objects.get_or_create(
-        channel=channel, external_id=session_id, defaults={"display_name": "Website visitor"}
+    # Visitor identity: the host page passes its localStorage-backed id (?v=);
+    # fall back to our cookie (works when the widget is opened first-party,
+    # e.g. during local testing), else mint a fresh id. Browsers drop
+    # SameSite=Lax cookies inside third-party iframes, so on a real WordPress
+    # site the ?v= param is what keeps a returning visitor on the same
+    # Customer + Conversation instead of fragmenting into a new one per visit.
+    session_id = (
+        _clean_session_id(request.GET.get("v", ""))
+        or _clean_session_id(request.COOKIES.get(f"widget_session_{site_key}", ""))
+        or uuid.uuid4().hex
     )
-    conversation = customer.conversations.order_by("-last_message_at").first()
-    if conversation is None:
-        conversation = Conversation.objects.create(customer=customer, last_message_at=timezone.now())
+
+    # Read-only lookup — nothing is written on a page view. Customer and
+    # Conversation rows are created lazily by submit_details/send_message.
+    customer = Customer.objects.filter(channel=channel, external_id=session_id).first()
+    conversation = (
+        customer.conversations.order_by("-last_message_at").first() if customer else None
+    )
 
     collect_details = bool((channel.credentials or {}).get("collect_lead_details", True))
     context = _chat_panel_context(channel, conversation, session_id, site_key)
     # First-time visitors must provide contact details before the chat opens
     # (unless the channel opts out via collect_lead_details: false).
-    context["needs_details"] = collect_details and not customer.email
+    context["needs_details"] = collect_details and not (customer and customer.email)
     if context["needs_details"]:
         context["form"] = LeadDetailsForm()
 
@@ -140,7 +190,7 @@ def _chat_panel_context(channel, conversation, session_id, site_key) -> dict:
     return {
         "channel": channel,
         "conversation": conversation,
-        "messages": conversation.messages.all(),
+        "messages": conversation.messages.all() if conversation else Message.objects.none(),
         "session_id": session_id,
         "site_key": site_key,
         "welcome_message": (channel.credentials or {}).get("welcome_message", "Hi! How can we help?"),
@@ -157,14 +207,16 @@ def submit_details(request, session_id):
     if request.method != "POST":
         return HttpResponseForbidden("POST only")
 
+    session_id = _clean_session_id(session_id)
+    if not session_id:
+        return HttpResponseForbidden("Invalid session.")
+
     site_key = request.POST.get("site_key", "")
     channel = _get_wordpress_channel(site_key)
     if channel is None:
         return HttpResponseForbidden("Unknown or inactive site key.")
 
-    customer, _ = Customer.objects.get_or_create(
-        channel=channel, external_id=session_id, defaults={"display_name": "Website visitor"}
-    )
+    customer, conversation = _ensure_customer_and_conversation(channel, session_id)
     form = LeadDetailsForm(request.POST)
     if not form.is_valid():
         return render(
@@ -213,6 +265,10 @@ def send_message(request, session_id):
     if request.method != "POST":
         return HttpResponseForbidden("POST only")
 
+    session_id = _clean_session_id(session_id)
+    if not session_id:
+        return HttpResponseForbidden("Invalid session.")
+
     site_key = request.POST.get("site_key", "")
     channel = _get_wordpress_channel(site_key)
     if channel is None:
@@ -228,12 +284,7 @@ def send_message(request, session_id):
     if not text:
         return HttpResponse(status=200)  # Nothing to do; ack silently.
 
-    customer, _ = Customer.objects.get_or_create(
-        channel=channel, external_id=session_id, defaults={"display_name": "Website visitor"}
-    )
-    conversation = customer.conversations.order_by("-last_message_at").first()
-    if conversation is None:
-        conversation = Conversation.objects.create(customer=customer, last_message_at=timezone.now())
+    _, conversation = _ensure_customer_and_conversation(channel, session_id)
 
     try:
         reply = handle_inbound_message(conversation, text)
