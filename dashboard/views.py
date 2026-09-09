@@ -1,7 +1,6 @@
 import csv
 import json
 
-from django.contrib import messages
 from accounts.decorators import staff_required
 from django.db.models import Q
 from django.http import HttpResponse
@@ -68,7 +67,6 @@ def llm_config_create(request):
             config = form.save()
             if config.is_active:
                 LLMConfig.objects.exclude(pk=config.pk).update(is_active=False)
-            messages.success(request, f"Created {config.name}.")
             rows_html = render(request, "dashboard/partials/llm_config_rows.html", {"configs": LLMConfig.objects.all().order_by("-is_active", "name")}).content.decode("utf-8")
             return _oob_refresh("llm-config-tbody", rows_html)
         return render(request, "dashboard/partials/llm_config_form.html", {"form": form, "config": None}, status=422)
@@ -84,7 +82,6 @@ def llm_config_update(request, pk):
             config = form.save()
             if config.is_active:
                 LLMConfig.objects.exclude(pk=config.pk).update(is_active=False)
-            messages.success(request, f"Updated {config.name}.")
             rows_html = render(request, "dashboard/partials/llm_config_rows.html", {"configs": LLMConfig.objects.all().order_by("-is_active", "name")}).content.decode("utf-8")
             return _oob_refresh("llm-config-tbody", rows_html)
         return render(request, "dashboard/partials/llm_config_form.html", {"form": form, "config": config}, status=422)
@@ -105,7 +102,6 @@ def llm_config_activate(request, pk):
     LLMConfig.objects.update(is_active=False)
     config.is_active = True
     config.save(update_fields=["is_active"])
-    messages.success(request, f"{config.name} is now the active LLM.")
     return render(request, "dashboard/partials/llm_config_rows.html", {"configs": LLMConfig.objects.all().order_by("-is_active", "name")})
 
 
@@ -122,7 +118,6 @@ def chunk_create(request):
     if request.method == "POST":
         if form.is_valid():
             form.save()
-            messages.success(request, "Knowledge chunk created (embedding queued).")
             rows_html = render(request, "dashboard/partials/chunk_rows.html", {"chunks": KnowledgeChunk.objects.all().order_by("-updated_at")}).content.decode("utf-8")
             return _oob_refresh("chunk-tbody", rows_html)
         return render(request, "dashboard/partials/chunk_form.html", {"form": form, "chunk": None}, status=422)
@@ -136,7 +131,6 @@ def chunk_update(request, pk):
     if request.method == "POST":
         if form.is_valid():
             form.save()
-            messages.success(request, "Chunk updated (re-embedding queued).")
             rows_html = render(request, "dashboard/partials/chunk_rows.html", {"chunks": KnowledgeChunk.objects.all().order_by("-updated_at")}).content.decode("utf-8")
             return _oob_refresh("chunk-tbody", rows_html)
         return render(request, "dashboard/partials/chunk_form.html", {"form": form, "chunk": chunk}, status=422)
@@ -163,7 +157,6 @@ def rule_create(request):
     if request.method == "POST":
         if form.is_valid():
             form.save()
-            messages.success(request, "Rule created.")
             rows_html = render(request, "dashboard/partials/rule_rows.html", {"rules": Rule.objects.all().order_by("priority", "name")}).content.decode("utf-8")
             return _oob_refresh("rule-tbody", rows_html)
         return render(request, "dashboard/partials/rule_form.html", {"form": form, "rule": None}, status=422)
@@ -177,7 +170,6 @@ def rule_update(request, pk):
     if request.method == "POST":
         if form.is_valid():
             form.save()
-            messages.success(request, "Rule updated.")
             rows_html = render(request, "dashboard/partials/rule_rows.html", {"rules": Rule.objects.all().order_by("priority", "name")}).content.decode("utf-8")
             return _oob_refresh("rule-tbody", rows_html)
         return render(request, "dashboard/partials/rule_form.html", {"form": form, "rule": rule}, status=422)
@@ -209,7 +201,6 @@ def channel_create(request):
             if creds is not None:
                 channel.credentials = creds
             channel.save()
-            messages.success(request, f"Channel {channel.name} created.")
             rows_html = render(request, "dashboard/partials/channel_rows.html", {"channels": Channel.objects.all().order_by("-is_active", "name")}).content.decode("utf-8")
             return _oob_refresh("channel-tbody", rows_html)
         return render(request, "dashboard/partials/channel_form.html", {"form": form, "cred_form": cred_form, "channel": None}, status=422)
@@ -229,7 +220,6 @@ def channel_update(request, pk):
             if creds is not None:
                 channel.credentials = creds
             channel.save()
-            messages.success(request, f"Channel {channel.name} updated.")
             rows_html = render(request, "dashboard/partials/channel_rows.html", {"channels": Channel.objects.all().order_by("-is_active", "name")}).content.decode("utf-8")
             return _oob_refresh("channel-tbody", rows_html)
         return render(request, "dashboard/partials/channel_form.html", {"form": form, "cred_form": cred_form, "channel": channel}, status=422)
@@ -377,8 +367,7 @@ def conversation_update_status(request, pk):
     if form.is_valid():
         conversation.status = form.cleaned_data["status"]
         conversation.assigned_agent = form.cleaned_data["assigned_agent"]
-        conversation.save(update_fields=["status", "assigned_agent", "updated_at"])
-        messages.success(request, "Conversation updated.")
+        conversation.save(update_fields=["status", "assigned_agent"])
     return redirect("dashboard-conversation-detail", pk=pk)
 
 
@@ -390,6 +379,5 @@ def bot_settings(request):
     form = BotSettingsForm(request.POST or None, instance=settings_obj)
     if request.method == "POST" and form.is_valid():
         form.save()
-        messages.success(request, "Bot settings saved.")
         return redirect("dashboard-bot-settings")
     return render(request, "dashboard/bot_settings.html", {"form": form})

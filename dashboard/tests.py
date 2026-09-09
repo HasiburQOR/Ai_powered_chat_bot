@@ -186,4 +186,19 @@ class ConversationFilterExportTests(TestCase):
         resp = self.client.get(reverse("dashboard-conversation-export"))
         self.assertIn("'=cmd", resp.content.decode())  # neutralized with a leading apostrophe
 
+    def test_update_status_saves_silently_without_banner(self):
+        """Handoff status must save with no green flash-confirmation banner
+        (user request) and still persist + render the transcript page."""
+        resp = self.client.post(
+            reverse("dashboard-conversation-update-status", args=[self.alice_conversation.pk]),
+            {"status": "human", "assigned_agent": ""},
+            follow=True,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Conversation Transcript")  # landed on the detail page
+        self.assertNotContains(resp, "Conversation updated.")  # flash text gone
+        self.assertNotContains(resp, "to-teal-500/10")  # banner markup gone from base.html
+        self.alice_conversation.refresh_from_db()
+        self.assertEqual(self.alice_conversation.status, "human")  # change still persisted
+
 

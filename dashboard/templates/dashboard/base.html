@@ -58,21 +58,6 @@
     </div>
   </nav>
 
-  <!-- Messages Alert Banners -->
-  {% if messages %}
-    <div class="max-w-7xl mx-auto px-6 pt-5 space-y-2">
-      {% for message in messages %}
-        <div class="bg-gradient-to-r from-emerald-500/10 to-teal-500/10 border border-emerald-500/30 text-emerald-800 rounded-2xl px-5 py-3 text-sm font-medium flex items-center justify-between shadow-sm">
-          <div class="flex items-center gap-2.5">
-            <span class="text-base">✅</span>
-            <span>{{ message }}</span>
-          </div>
-          <button onclick="this.parentElement.remove()" class="text-emerald-600 hover:text-emerald-900 font-bold text-xs">✕</button>
-        </div>
-      {% endfor %}
-    </div>
-  {% endif %}
-
   <!-- Main Workspace -->
   <main class="max-w-7xl mx-auto p-6 md:p-8">
     {% block content %}{% endblock %}
