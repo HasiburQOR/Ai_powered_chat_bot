@@ -38,7 +38,7 @@ TRAVEL_INTENT_KEYWORDS = (
     "honeymoon", "itinerary", "flight", "hotel", "resort", "book", "booking",
     "reservation", "price", "cost", "dubai", "abu dhabi", "baku", "istanbul",
     "antalya", "maldives", "bali", "thailand", "malaysia", "singapore",
-    "georgia", "armenia", "azerbaijan", "sri lanka", "egypt", "qatar",
+    "georgia", "armenia", "armania", "azerbaijan", "sri lanka", "egypt", "qatar",
     "saudi", "umrah", "umra", "hajj",
 )
 
@@ -81,10 +81,14 @@ def _profile_context(customer) -> str:
         return ""
     return (
         "Travel profile for this customer (" + "; ".join(parts) + "). "
-        "Never ask for these details in a first greeting and never list every "
-        "question at once — once the visitor shows interest in an actual trip, "
-        "work whatever is still missing into the conversation naturally, one or "
-        "two things per reply."
+        "IMPORTANT: this summary is written in the background and can LAG "
+        "BEHIND the newest chat messages. Before asking for any detail, check "
+        "the recent conversation — if the visitor already answered it there, "
+        "trust the chat history and NEVER ask for the same detail again; "
+        "acknowledge the answer instead. Never ask for these details in a "
+        "first greeting and never list every question at once — once the "
+        "visitor shows interest in an actual trip, work whatever is still "
+        "missing into the conversation naturally, one or two things per reply."
     )
 
 
@@ -206,18 +210,23 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
             role = "assistant" if m.sender_type == Message.SenderType.BOT else "user"
             messages.append({"role": role, "content": m.content})
 
-        # 4. Call the LLM.
+        # 4. Call the LLM. One retry: provider hiccups (timeouts, rate limits)
+        # used to drop straight to the fallback mid-conversation, which read as
+        # the bot ignoring everything the visitor had just said.
         reply_text = None
         if config is not None:
-            try:
-                reply_text = get_adapter(config).send(messages, config)
-            except Exception as exc:
-                logger.error(
-                    "LLM call failed for conversation %s (provider=%s model=%s): %s: %s",
-                    conversation.pk, config.provider, config.model_name,
-                    type(exc).__name__, str(exc)[:500],
-                )
-                reply_text = None
+            for attempt in (1, 2):
+                try:
+                    reply_text = get_adapter(config).send(messages, config)
+                    break
+                except Exception as exc:
+                    logger.error(
+                        "LLM call failed (attempt %d/2) for conversation %s "
+                        "(provider=%s model=%s): %s: %s",
+                        attempt, conversation.pk, config.provider,
+                        config.model_name, type(exc).__name__, str(exc)[:500],
+                    )
+                    reply_text = None
         if not reply_text:
             reply_text = settings.fallback_message or FALLBACK_DEFAULT
 
