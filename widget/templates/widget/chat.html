@@ -32,6 +32,33 @@
         document.getElementById('widget-root').style.display = 'none';
       }
     });
+    // --- Composer: Enter sends, Shift+Enter inserts a newline --------------
+    // The composer is a <textarea> so multi-line messages are possible. A
+    // plain Enter submits (the old single-line <input> behaviour) and
+    // Shift+Enter falls through to the browser's newline. isComposing guards
+    // IME users (Japanese/Chinese) whose Enter first confirms candidate text.
+    function autosizeChatInput(input) {
+      if (!input) { return; }
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    }
+    document.body.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' || e.shiftKey || e.isComposing) { return; }
+      var input = e.target;
+      if (!input || !input.classList || !input.classList.contains('chat-input')) { return; }
+      e.preventDefault();
+      var form = input.closest('form');
+      if (!form) { return; }
+      if (form.requestSubmit) { form.requestSubmit(); }
+      else { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); }
+    });
+    // Let the composer grow with its content, up to a sane cap.
+    document.body.addEventListener('input', function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains('chat-input')) {
+        autosizeChatInput(e.target);
+      }
+    });
+
     // --- Optimistic send --------------------------------------------------
     // The bot engine (rules → retrieval → LLM) runs synchronously, so the
     // /send/ round-trip can take seconds. Don't make the visitor stare at a
@@ -67,6 +94,7 @@
       log.appendChild(mine);
       log.appendChild(dots);
       input.value = '';
+      autosizeChatInput(input);
       scrollLog();
     });
 
@@ -83,6 +111,7 @@
         if (e.detail.successful) {
           form.reset();  // already cleared optimistically; tidy validation state
           delete form._pendingText;
+          autosizeChatInput(form.querySelector('[name="message"]'));
         } else {
           // Network/5xx: nothing was persisted — un-optimistically put the
           // visitor's text back so they can retry without retyping.
@@ -93,6 +122,7 @@
           var input = form.querySelector('[name="message"]');
           if (input && !input.value && form._pendingText) { input.value = form._pendingText; }
           delete form._pendingText;
+          autosizeChatInput(input);
         }
       }
       scrollLog();

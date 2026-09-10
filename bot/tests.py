@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from bot.engine import _profile_context, handle_inbound_message
+from bot.engine import _is_abusive, _profile_context, handle_inbound_message
 from conversations.models import Conversation, Customer
 from knowledge.models import Rule
 from llm.models import LLMConfig
@@ -118,3 +118,67 @@ class EngineRuleOrderTests(EngineTestMixin, TestCase):
         self.assertEqual(out[0].content, "Hi there! 👋 Welcome!")
         # The un-matched rule path must not be triggered by words CONTAINING
         # "hi" — that regression is covered in knowledge/tests.py.
+
+
+class EngineAbuseTests(EngineTestMixin, TestCase):
+    """Abusive turns must never draw the clueless 'let me get a team member'
+    fallback: the LLM is coached to de-escalate, and when it still cannot
+    answer (provider refusal / outage), a calm built-in reply goes out."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        LLMConfig.objects.create(
+            name="Primary", provider="openai", model_name="gpt-4o-mini",
+            is_active=True)
+
+    @patch("bot.engine.get_adapter")
+    def test_abusive_message_coaches_llm_to_deescalate(self, mock_get_adapter):
+        conversation = self._conversation()
+        mock_get_adapter.return_value.send.return_value = (
+            "Sorry you're feeling this way — how can I help with your trip?")
+
+        out = handle_inbound_message(conversation, "fuck you")
+
+        self.assertEqual(len(out), 1)
+        self.assertNotIn("team member", out[0].content)
+        messages = mock_get_adapter.return_value.send.call_args.args[0]
+        system_texts = [m["content"] for m in messages if m["role"] == "system"]
+        self.assertTrue(
+            any("ABUSE HANDLING" in t for t in system_texts),
+            "the de-escalation instruction must reach the LLM")
+
+    @patch("bot.engine.get_adapter")
+    def test_abusive_message_llm_failure_gets_calm_reply(self, mock_get_adapter):
+        """Provider refuses/abuses-filter blocks the call → the calm built-in
+        reply, never 'let me get a team member to help.'"""
+        conversation = self._conversation()
+        mock_get_adapter.return_value.send.side_effect = RuntimeError("refused")
+
+        out = handle_inbound_message(conversation, "fuck you")
+
+        self.assertEqual(mock_get_adapter.return_value.send.call_count, 2)  # retry still applies
+        self.assertEqual(len(out), 1)
+        self.assertNotIn("team member", out[0].content)
+        self.assertIn("help", out[0].content.lower())
+
+    @patch("bot.engine.get_adapter")
+    def test_non_abusive_failure_keeps_normal_fallback(self, mock_get_adapter):
+        conversation = self._conversation()
+        mock_get_adapter.return_value.send.side_effect = RuntimeError("down")
+
+        out = handle_inbound_message(conversation, "hello there")
+
+        self.assertIn("team member", out[0].content)  # unchanged behaviour
+
+    def test_detection_boundaries(self):
+        self.assertTrue(_is_abusive("fuck you"))
+        self.assertTrue(_is_abusive("You are USELESS!!"))
+        self.assertTrue(_is_abusive("f u c k you"))  # obfuscated
+        self.assertTrue(_is_abusive("f.u.c.k"))      # obfuscated
+        # Word-start guard keeps innocents out (Scunthorpe contains c·u·n·t),
+        # even in very short messages where a naive "remove spaces" check
+        # would resurrect the false positive.
+        self.assertFalse(_is_abusive("Do you have Scunthorpe tours?"))
+        self.assertFalse(_is_abusive("Scunthorpe?"))
+        self.assertFalse(_is_abusive("What is the price of the Dubai package?"))

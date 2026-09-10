@@ -30,6 +30,24 @@ body.chat-widget {
   color: #fff;
   font-weight: 600;
 }
+.chat-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.chat-logo {
+  height: 36px;
+  width: auto;
+  flex: 0 0 auto;
+  object-fit: contain;
+  /* The TavelDoor artwork is white on a transparent background — a dark chip
+     keeps it readable on any theme color. */
+  background: #111827;
+  border-radius: 8px;
+  padding: 3px 8px;
+  box-sizing: border-box;
+}
 .chat-close {
   background: transparent;
   border: 0;
@@ -82,9 +100,16 @@ body.chat-widget {
   flex: 1 1 auto;
   min-width: 0;
   border: 1px solid #d1d5db;
-  border-radius: 9999px;
+  border-radius: 18px;
   padding: 8px 16px;
   font: inherit;
+  line-height: 1.45;
+  box-sizing: border-box;
+  /* Multi-line composer: it grows with its content via autosizeChatInput(),
+     never manually, and scrolls past the cap. */
+  resize: none;
+  max-height: 120px;
+  overflow-y: auto;
 }
 .chat-input:focus {
   outline: none;

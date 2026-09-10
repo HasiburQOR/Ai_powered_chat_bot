@@ -145,3 +145,36 @@ class WidgetChatOpenTests(TestCase):
         # Travel intent → the reply bubble + the scripted profile questions.
         self.assertEqual(body.count('class="msg-row bot"'), 2)
         self.assertIn("WhatsApp number", body)
+
+
+class WidgetBrandingAndComposerTests(TestCase):
+    """TavelDoor logo branding + the multi-line composer
+    (plain Enter sends, Shift+Enter inserts a newline)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.channel = Channel.objects.create(
+            name="Help Site",
+            channel_type="wordpress",
+            is_active=True,
+            credentials={"site_key": "sk-ui", "bot_name": "TavelDoor Assistant"},
+        )
+
+    def test_chat_header_shows_traveldoor_logo(self):
+        resp = self.client.get(reverse("widget-chat"), {"site_key": "sk-ui"})
+        self.assertContains(resp, "chat-logo")
+        self.assertContains(resp, "/static/img/logo.webp")
+
+    def test_composer_is_textarea_with_enter_to_send_script(self):
+        """Shift+Enter can only work with a <textarea> + the keydown handler
+        that submits on plain Enter."""
+        resp = self.client.get(reverse("widget-chat"), {"site_key": "sk-ui"})
+        self.assertContains(resp, "<textarea")
+        self.assertNotContains(resp, "<input type=\"text\" name=\"message\"")
+        self.assertContains(resp, "shiftKey")
+
+    def test_embed_js_floating_button_uses_logo(self):
+        resp = self.client.get(reverse("widget-embed-js"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "logo.webp")
+        self.assertNotContains(resp, "&#128172;")  # old 💬 emoji is gone

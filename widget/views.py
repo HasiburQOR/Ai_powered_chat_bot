@@ -4,6 +4,7 @@ import uuid
 from django.core.cache import cache
 from django.http import HttpResponse, HttpResponseForbidden
 from django.shortcuts import render
+from django.templatetags.static import static
 from django.utils import timezone
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
@@ -58,6 +59,9 @@ def embed_js(request):
     injects a floating button plus a hidden iframe pointing back at our
     /widget/chat/ page."""
     origin = request.scheme + "://" + request.get_host()
+    # Absolute URL: this snippet runs on the host WordPress page, so a relative
+    # src would resolve against the blog's domain, not ours.
+    logo_url = origin + static("img/logo.webp")
     js = """
 (function () {
   var script = document.currentScript || (function () {
@@ -82,8 +86,12 @@ def embed_js(request):
   iframe.style.cssText = 'display:none;position:fixed;bottom:90px;' + side + 'width:360px;height:520px;max-height:80vh;border:1px solid #d1d5db;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);z-index:2147483000;background:#fff;';
 
   var button = document.createElement('button');
-  button.innerHTML = '&#128172;';
-  button.style.cssText = 'position:fixed;bottom:20px;' + side + 'width:60px;height:60px;border-radius:9999px;border:none;background:' + theme + ';color:#fff;font-size:22px;cursor:pointer;z-index:2147483000;box-shadow:0 4px 12px rgba(0,0,0,.25);';
+  // TavelDoor logo on a dark round chip (the artwork is white on a
+  // transparent background) instead of the anonymous 💬 emoji. Note: this
+  // string goes through Python percent-formatting below, so literal percent
+  // signs in the CSS are doubled.
+  button.innerHTML = '<img src="%(logo_url)s" alt="Open chat" style="width:100%%;height:100%%;object-fit:contain;border-radius:50%%;background:#111827;padding:10px;box-sizing:border-box;">';
+  button.style.cssText = 'position:fixed;bottom:20px;' + side + 'width:60px;height:60px;border-radius:9999px;border:none;background:' + theme + ';color:#fff;font-size:22px;cursor:pointer;z-index:2147483000;box-shadow:0 4px 12px rgba(0,0,0,.25);padding:0;overflow:hidden;';
   button.setAttribute('aria-label', 'Open chat');
 
   button.addEventListener('click', function () {
@@ -101,7 +109,7 @@ def embed_js(request):
   document.body.appendChild(iframe);
   document.body.appendChild(button);
 })();
-""" % {"origin": origin}
+""" % {"origin": origin, "logo_url": logo_url}
     return HttpResponse(js, content_type="application/javascript")
 
 

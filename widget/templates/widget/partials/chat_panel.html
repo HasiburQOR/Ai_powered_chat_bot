@@ -1,6 +1,11 @@
+{% load static %}
 {# The chat UI. Rendered by the chat page; lead details are collected from the conversation itself. #}
 <header class="chat-header" style="background: {{ theme_color|default:'#4f46e5' }}">
-  <span>{{ bot_name }}</span>
+  <span class="chat-brand">
+    {# TavelDoor logo — white artwork on transparency, so it sits on a dark chip #}
+    <img class="chat-logo" src="{% static 'img/logo.webp' %}" alt="{{ bot_name }}">
+    <span>{{ bot_name }}</span>
+  </span>
   <button type="button" class="chat-close" aria-label="Close chat" title="Close">&#10005;</button>
 </header>
 
@@ -23,8 +28,9 @@
       hx-swap="beforeend"
       class="chat-form">
   <input type="hidden" name="site_key" value="{{ site_key }}">
-  <input type="text" name="message" autocomplete="off" required
-         class="chat-input"
-         placeholder="Type your message…">
+  {# A textarea, not <input type=text>: Shift+Enter must insert a newline. #}
+  <textarea name="message" rows="1" autocomplete="off" required
+            class="chat-input"
+            placeholder="Type your message…"></textarea>
   <button type="submit" class="chat-send" style="background: {{ theme_color|default:'#4f46e5' }}">Send</button>
 </form>

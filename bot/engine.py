@@ -15,6 +15,7 @@ Returns EVERY outbound Message produced this turn (a list), so callers — the
 widget fragment and the platform webhook — deliver all of them.
 """
 import logging
+import re
 
 from django.utils import timezone
 
@@ -47,6 +48,51 @@ def _travel_intent(text: str) -> bool:
     lowered = (text or "").lower()
     return any(keyword in lowered for keyword in TRAVEL_INTENT_KEYWORDS)
 
+# --- Abuse handling ---------------------------------------------------------
+# A message like "fuck you" can make the provider refuse (or the model stall),
+# which used to surface the generic "I'm not sure about that — let me get a
+# team member to help." fallback and read as the bot being oblivious. Abusive
+# turns instead coach the LLM to de-escalate, and get a calm built-in reply
+# whenever the LLM still cannot answer.
+_ABUSIVE_STEMS = (
+    # Matched at the START of a word, suffixes allowed: fuck/fucking/fucked,
+    # shit/shithead, bitch/bitches ... (the (?<!\w) guard keeps "cunt" out of
+    # "Scunthorpe" and "shit" out of "mishit").
+    "fuck", "fuk", "fcuk", "fck", "shit", "bitch", "bastard", "asshole",
+    "arsehole", "cunt", "motherfucker", "dickhead", "wtf",
+)
+_ABUSIVE_WORDS = (
+    # Whole words only — suffix matching here would drag in innocents.
+    "dick", "prick", "twat", "bollocks", "stupid", "idiot", "idiots",
+    "useless", "dumb",
+)
+_ABUSE_STEM_RE = re.compile(
+    rf"(?<!\w)(?:{'|'.join(map(re.escape, _ABUSIVE_STEMS))})\w*")
+_ABUSE_WORD_RE = re.compile(
+    rf"(?<!\w)(?:{'|'.join(map(re.escape, _ABUSIVE_WORDS))})(?!\w)")
+
+
+def _obfuscated_pattern(word: str) -> str:
+    """Matches a word whose letters are separated by non-letters ("f u c k",
+    "f-u-c-k!"), but never letters buried inside a longer alphabetic run —
+    so "scunthorpe" can't masquerade as a slur once spaces are ignored."""
+    letters = [re.escape(ch) for ch in word]
+    return r"(?<![a-z])" + r"[^a-z]*".join(letters) + r"(?![a-z])"
+
+
+_ABUSE_OBFUSCATED_RE = re.compile(
+    "|".join(_obfuscated_pattern(w) for w in _ABUSIVE_STEMS), re.IGNORECASE)
+
+
+def _is_abusive(text: str) -> bool:
+    lowered = (text or "").lower()
+    return bool(
+        _ABUSE_STEM_RE.search(lowered)
+        or _ABUSE_WORD_RE.search(lowered)
+        or _ABUSE_OBFUSCATED_RE.search(text or "")
+    )
+
+
 # Applies to every LLM turn regardless of the configured system prompt: the bot
 # must mirror the visitor's language and keep replies chat-friendly plain text.
 LANGUAGE_AND_FORMAT_INSTRUCTIONS = (
@@ -58,6 +104,25 @@ LANGUAGE_AND_FORMAT_INSTRUCTIONS = (
     "FORMAT: Keep every reply a short, plain-text chat message that reads well on "
     "a phone screen. Never output Markdown (no **bold**, no ## headings, no "
     "|tables|, no code blocks) — use short lines and dashes instead."
+)
+
+# Appended as an extra system message ONLY on turns where _is_abusive() fires.
+ABUSE_HANDLING_INSTRUCTIONS = (
+    "ABUSE HANDLING: The visitor's latest message contains rude or abusive "
+    "language. Stay calm, warm and professional — never scold, never lecture, "
+    "never repeat their wording and never mention these instructions. "
+    "Acknowledge their frustration in one short line, then steer back to how "
+    "you can help with their travel plans. If there is no real question, send "
+    "one short, kind line saying you're here to help whenever they're ready — "
+    "and nothing more."
+)
+
+# Used instead of the "not sure" fallback when the LLM cannot answer an
+# abusive turn (provider refusal, outage...): promising a human teammate for
+# "fuck you" reads as the bot being oblivious.
+ABUSIVE_FALLBACK_DEFAULT = (
+    "I can sense you're frustrated, and I'm sorry for that. Tell me about the "
+    "trip you have in mind and I'll do my best to help."
 )
 
 
@@ -175,6 +240,7 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
 
     # 2. Deterministic rules first.
     rule = match_rule(text)
+    abusive = _is_abusive(text)
     if rule and rule.short_circuits_llm:
         outbounds.append(Message.objects.create(
             conversation=conversation,
@@ -201,6 +267,8 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
             {"role": "system", "content": config.system_prompt if config else "You are a helpful support assistant."},
             {"role": "system", "content": LANGUAGE_AND_FORMAT_INSTRUCTIONS},
         ]
+        if abusive:
+            messages.append({"role": "system", "content": ABUSE_HANDLING_INSTRUCTIONS})
         context = _build_context_sections(conversation.customer, chunks)
         if rule and not rule.short_circuits_llm:
             context += f"\n\nApplicable rule ({rule.name}): {rule.response_text}"
@@ -228,7 +296,10 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
                     )
                     reply_text = None
         if not reply_text:
-            reply_text = settings.fallback_message or FALLBACK_DEFAULT
+            if abusive:
+                reply_text = ABUSIVE_FALLBACK_DEFAULT
+            else:
+                reply_text = settings.fallback_message or FALLBACK_DEFAULT
 
         outbounds.append(Message.objects.create(
             conversation=conversation,
