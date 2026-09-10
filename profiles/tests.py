@@ -48,6 +48,12 @@ class ExtractionTests(TestCase):
         fields = extract_fields("x", send_fn=lambda m, c: '{"trip_days": "soon", "adults": null}')
         self.assertEqual(fields, {})
 
+    def test_extract_fields_detects_travel_intent(self):
+        fields = extract_fields(
+            "we want to visit Dubai in December",
+            send_fn=lambda m, c: '{"travel_intent": true}')
+        self.assertEqual(fields, {"travel_intent": True})
+
     def test_blank_text_never_calls_llm(self):
         called = []
 
@@ -75,6 +81,15 @@ class ApplyFieldsTests(TestCase):
         self.assertEqual(profile.full_name, "Ravi Kumar")
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.display_name, "Ravi Kumar")  # backfilled
+
+    def test_travel_intent_flag_is_latched(self):
+        apply_fields(self.customer, {"travel_intent": True})
+        profile = self.customer.travel_profile
+        self.assertTrue(profile.travel_intent_detected)
+        # A later message without intent never un-detects earlier interest.
+        apply_fields(self.customer, {"travel_intent": False, "full_name": "Ravi"})
+        profile.refresh_from_db()
+        self.assertTrue(profile.travel_intent_detected)
 
     def test_second_apply_updates_same_profile_and_completes(self):
         apply_fields(self.customer, {"full_name": "Ravi"})
@@ -110,12 +125,13 @@ class ExtractionTaskTests(TestCase):
                 mock.patch("profiles.extraction.get_adapter") as fake_get_adapter:
             fake_config_cls.objects.filter.return_value.first.return_value = object()
             fake_get_adapter.return_value.send = lambda messages, config: \
-                '{"full_name": "Ravi", "travel_date": "2026-10-12"}'
+                '{"full_name": "Ravi", "travel_date": "2026-10-12", "travel_intent": true}'
             extract_profile_task(str(self.customer.pk), "I am Ravi, travelling in October")
 
         profile = self.customer.travel_profile
         self.assertEqual(profile.full_name, "Ravi")
         self.assertEqual(profile.travel_date, dt.date(2026, 10, 12))
+        self.assertTrue(profile.travel_intent_detected)
         self.assertEqual(profile.profile_number, "BP-000001")
 
     def test_task_ignores_unknown_customer_and_blank_text(self):
@@ -125,7 +141,8 @@ class ExtractionTaskTests(TestCase):
 
 
 class EngineProfileIntroTests(TestCase):
-    """The scripted profile question rides along as a second bot bubble."""
+    """The scripted profile questions ride along as a second bot bubble — but
+    only once, and only after the visitor shows travel intent."""
 
     @classmethod
     def setUpTestData(cls):
@@ -137,23 +154,47 @@ class EngineProfileIntroTests(TestCase):
                             response_text="Hello! How can I help you?",
                             short_circuits_llm=True, priority=10)
 
-    def test_first_message_gets_reply_plus_intro(self):
+    def test_plain_greeting_gets_reply_only(self):
+        """No travel intent → no interrogation, and no lead row either."""
         outbounds = handle_inbound_message(self.conversation, "hello")
-        self.assertEqual(len(outbounds), 2)
+        self.assertEqual(len(outbounds), 1)
         self.assertEqual(outbounds[0].content, "Hello! How can I help you?")
+        self.assertFalse(TravelProfile.objects.exists())
+
+    def test_travel_intent_gets_reply_plus_questions_once(self):
+        outbounds = handle_inbound_message(
+            self.conversation, "hello, I want a 7 days Dubai package")
+        self.assertEqual(len(outbounds), 2)
         self.assertIn("WhatsApp number", outbounds[1].content)
         self.assertTrue(all(m.sender_type == Message.SenderType.BOT for m in outbounds))
+        profile = self.customer.travel_profile
+        self.assertTrue(profile.travel_intent_detected)
+        self.assertIsNotNone(profile.questions_sent_at)
 
-    def test_second_message_gets_reply_only(self):
-        handle_inbound_message(self.conversation, "hello")
-        outbounds = handle_inbound_message(self.conversation, "thanks, that's clear")
+        # Intent again, but the questions were already sent → reply only.
+        again = handle_inbound_message(self.conversation, "maybe baku in spring too")
+        self.assertEqual(len(again), 1)
+
+    def test_llm_detected_intent_triggers_questions_without_keywords(self):
+        """The extractor's travel_intent flag backstops non-English intent the
+        keyword list can't see."""
+        apply_fields(self.customer, {"travel_intent": True})
+        outbounds = handle_inbound_message(self.conversation, "ok")
+        self.assertEqual(len(outbounds), 2)
+
+    def test_incomplete_profile_stays_silent_without_intent(self):
+        apply_fields(self.customer, {"full_name": "Ravi"})
+        outbounds = handle_inbound_message(self.conversation, "hello again")
         self.assertEqual(len(outbounds), 1)
+        profile = TravelProfile.objects.get(customer=self.customer)
+        self.assertIsNone(profile.questions_sent_at)
 
     def test_disabled_settings_skip_intro(self):
         settings = BotSettings.load()
         settings.profile_collection_enabled = False
         settings.save()
-        outbounds = handle_inbound_message(self.conversation, "hello")
+        outbounds = handle_inbound_message(
+            self.conversation, "hello, I'd like a Dubai package")
         self.assertEqual(len(outbounds), 1)
 
     def test_complete_profile_skips_intro(self):
@@ -162,7 +203,8 @@ class EngineProfileIntroTests(TestCase):
             "nationality": "Indian", "residence_country": "India",
             "travel_date": dt.date(2026, 12, 1), "trip_days": 7, "adults": 2,
         })
-        outbounds = handle_inbound_message(self.conversation, "hello")
+        outbounds = handle_inbound_message(
+            self.conversation, "dubai package for 2 please")
         self.assertEqual(len(outbounds), 1)
 
     def test_language_and_format_instructions_sent_to_llm(self):
@@ -222,7 +264,7 @@ class WidgetSendTests(TestCase):
             name="Site", channel_type="wordpress", is_active=True,
             credentials={"site_key": "sk-prof"})
 
-    def test_first_send_renders_two_bot_bubbles_and_no_comment_leak(self):
+    def test_plain_greeting_renders_single_bot_bubble(self):
         resp = self.client.post(
             reverse("widget-send", args=["visitor1"]),
             {"site_key": "sk-prof", "message": "hi"})
@@ -230,14 +272,20 @@ class WidgetSendTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn("Optimistic UI", body)
         self.assertNotIn("#}", body)
-        self.assertEqual(body.count('class="msg-row bot"'), 2)
-        self.assertIn("WhatsApp number", body)
+        # No travel intent → one reply bubble, no interrogation.
+        self.assertEqual(body.count('class="msg-row bot"'), 1)
+        self.assertNotIn("WhatsApp number", body)
 
-    def test_second_send_renders_one_bot_bubble(self):
+    def test_travel_request_adds_scripted_questions_once(self):
         self.client.post(reverse("widget-send", args=["visitor1"]),
                          {"site_key": "sk-prof", "message": "hi"})
         resp = self.client.post(reverse("widget-send", args=["visitor1"]),
-                                {"site_key": "sk-prof", "message": "ok thanks"})
+                                {"site_key": "sk-prof", "message": "I need a Dubai package"})
+        body = resp.content.decode()
+        self.assertEqual(body.count('class="msg-row bot"'), 2)
+        self.assertIn("WhatsApp number", body)
+        resp = self.client.post(reverse("widget-send", args=["visitor1"]),
+                                {"site_key": "sk-prof", "message": "a 5 star hotel please"})
         self.assertEqual(resp.content.decode().count('class="msg-row bot"'), 1)
 
 
@@ -327,12 +375,21 @@ class DashboardProfileTests(TestCase):
         self.assertTrue(resp.content.startswith(b"\x89PNG"))
         self.assertIn("BP-000001_Ravi_Kumar_transcript.png", resp["Content-Disposition"])
 
+    def test_full_report_png_download(self):
+        """The combined report: profile card on top, full transcript below."""
+        profile = self._make_profile()
+        resp = self.client.get(reverse("dashboard-profile-report", args=[profile.pk]))
+        self.assertEqual(resp["Content-Type"], "image/png")
+        self.assertTrue(resp.content.startswith(b"\x89PNG"))
+        self.assertIn("BP-000001_Ravi_Kumar_report.png", resp["Content-Disposition"])
+
     def test_detail_page_renders_and_edit_saves(self):
         profile = self._make_profile()
         resp = self.client.get(reverse("dashboard-profile-detail", args=[profile.pk]))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Ravi Kumar")
         self.assertContains(resp, "Profile card (PNG)")
+        self.assertContains(resp, "Full report (PNG)")
         resp = self.client.post(reverse("dashboard-profile-detail", args=[profile.pk]), {
             "full_name": "Ravi K.", "whatsapp_number": "+911234567890",
             "nationality": "Indian", "residence_country": "India",
@@ -352,6 +409,7 @@ class DashboardProfileTests(TestCase):
             reverse("dashboard-profile-detail", args=[profile.pk]),
             reverse("dashboard-profile-card", args=[profile.pk]),
             reverse("dashboard-profile-transcript", args=[profile.pk]),
+            reverse("dashboard-profile-report", args=[profile.pk]),
             reverse("dashboard-profile-export-csv"),
             reverse("dashboard-profile-export-xlsx"),
         ):

@@ -75,14 +75,15 @@ class BotSettings(models.Model):
                                       help_text='Optional, used by rules/prompt context')
     profile_collection_enabled = models.BooleanField(
         default=True,
-        help_text='When on, the bot asks new contacts a short set of travel-profile '
-                  'questions (after its first reply in a new conversation) and files '
+        help_text='When on, the bot asks for a short set of travel-profile details '
+                  'once, the first time a visitor shows travel interest, and files '
                   'their answers into a customer profile.')
     profile_intro_message = models.TextField(
         default=PROFILE_INTRO_MESSAGE_DEFAULT,
         blank=True,
-        help_text='Scripted question sent right after the bot\'s first reply in a '
-                  'new conversation (requires profile collection to be enabled).')
+        help_text='Scripted question list, sent as a second bubble the first time a '
+                  'visitor shows travel intent (requires profile collection to be '
+                  'enabled; leave blank to rely on the AI weaving questions in).')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

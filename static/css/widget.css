@@ -101,44 +101,6 @@ body.chat-widget {
   cursor: pointer;
 }
 
-/* Pre-chat lead form */
-.lead-body { flex: 1 1 auto; overflow-y: auto; padding: 20px; }
-.lead-hint { font-size: 13px; color: #4b5563; margin: 0 0 16px; }
-.lead-form { display: flex; flex-direction: column; gap: 16px; }
-.field label {
-  display: block;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #6b7280;
-  margin-bottom: 4px;
-}
-.field input {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  padding: 8px 10px;
-  font: inherit;
-}
-.field input:focus {
-  outline: none;
-  border-color: var(--theme, #4f46e5);
-  box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.12);
-}
-.field .error { color: #dc2626; font-size: 12px; margin: 4px 0 0; }
-.lead-submit {
-  width: 100%;
-  border: 0;
-  border-radius: 9999px;
-  padding: 10px 16px;
-  color: #fff;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
 /* In-log typing indicator (three bouncing dots) — appended optimistically by
    chat.html the moment the visitor submits, removed when the reply fragment
    arrives (or on failure). */

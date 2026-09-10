@@ -125,10 +125,10 @@ def render_profile_card(profile) -> bytes:
     return buf.getvalue()
 
 
-def render_transcript_image(messages, title="Chat transcript") -> bytes:
+def render_transcript_image(messages, title="Chat transcript", width=1080) -> bytes:
     """The whole conversation rendered widget-style: indigo customer bubbles on
     the right, white bot/agent bubbles on the left."""
-    width, margin = 1080, 44
+    margin = 44
     bubble_pad, line_h, row_gap, label_h = 18, 32, 28, 26
     f_sender, f_text, f_title = _font(17, True), _font(23), _font(26, True)
 
@@ -173,4 +173,21 @@ def render_transcript_image(messages, title="Chat transcript") -> bytes:
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def render_full_report(profile, messages, title="Chat transcript") -> bytes:
+    """One PNG for sharing: the profile card on top, the full chat transcript
+    rendered below it on the same 1000px-wide canvas."""
+    width = 1000  # match the profile card's width
+    card = Image.open(io.BytesIO(render_profile_card(profile)))
+    transcript = Image.open(io.BytesIO(
+        render_transcript_image(messages, title=title, width=width)))
+    gap = 24
+    canvas = Image.new(
+        "RGB", (width, card.height + gap + transcript.height), SLATE_50)
+    canvas.paste(card, (0, 0))
+    canvas.paste(transcript, (0, card.height + gap))
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG")
     return buf.getvalue()

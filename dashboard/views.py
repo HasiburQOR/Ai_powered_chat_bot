@@ -14,7 +14,12 @@ from conversations.models import Conversation, Message
 from knowledge.models import BotSettings, KnowledgeChunk, Rule
 from llm.models import LLMConfig
 from platforms.models import Channel
-from profiles.images import profile_filename, render_profile_card, render_transcript_image
+from profiles.images import (
+    profile_filename,
+    render_full_report,
+    render_profile_card,
+    render_transcript_image,
+)
 from profiles.models import TravelProfile
 
 from .forms import (
@@ -552,4 +557,21 @@ def profile_transcript_png(request, pk):
     return _png_response(
         render_transcript_image(messages, title=title),
         profile_filename(profile, suffix="_transcript"),
+    )
+
+
+@staff_required
+def profile_report_png(request, pk):
+    """One PNG for sharing: profile card on top, full chat transcript below."""
+    profile = get_object_or_404(
+        TravelProfile.objects.select_related("customer", "customer__channel"), pk=pk)
+    messages = list(
+        Message.objects.filter(conversation__customer=profile.customer)
+        .select_related("conversation").order_by("created_at")
+    )
+    name = profile.full_name or profile.customer.display_name or "visitor"
+    title = f"{profile.profile_number or 'Travel lead'} — {name}"
+    return _png_response(
+        render_full_report(profile, messages, title=title),
+        profile_filename(profile, suffix="_report"),
     )

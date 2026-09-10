@@ -47,6 +47,14 @@ class TravelProfile(models.Model):
     children_ages = models.CharField(
         max_length=120, blank=True, help_text="Comma-separated ages, e.g. '5, 8'.")
 
+    travel_intent_detected = models.BooleanField(
+        default=False,
+        help_text="Set once the visitor's messages show travel interest (keyword "
+                  "match or LLM detection); gates the scripted profile questions.")
+    questions_sent_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="When the scripted profile questions were sent — they are asked only once.")
+
     is_complete = models.BooleanField(default=False)
     completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

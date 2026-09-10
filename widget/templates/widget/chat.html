@@ -15,13 +15,9 @@
   <script src="{% static 'js/htmx.min.js' %}" defer></script>
 </head>
 <body class="chat-widget">
-  {# htmx swaps #widget-root's innerHTML between the pre-chat lead form and the chat panel #}
+  {# The chat panel renders immediately; lead details are collected from the chat itself #}
   <div id="widget-root" class="widget-root" style="--theme: {{ theme_color|default:'#4f46e5' }}">
-    {% if needs_details %}
-      {% include "widget/partials/lead_form.html" %}
-    {% else %}
-      {% include "widget/partials/chat_panel.html" %}
-    {% endif %}
+    {% include "widget/partials/chat_panel.html" %}
   </div>
 
   <script>

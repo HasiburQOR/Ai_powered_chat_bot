@@ -5,8 +5,10 @@ from conversations.models import Customer, Message
 from platforms.models import Channel
 
 
-class WidgetLeadDetailsTests(TestCase):
-    """Pre-chat visitor details capture (widget) wired to Customer fields."""
+class WidgetChatOpenTests(TestCase):
+    """The widget opens straight into the chat — there is no pre-chat form.
+    Identity (visitor id) and travel details are collected from the
+    conversation itself."""
 
     @classmethod
     def setUpTestData(cls):
@@ -23,70 +25,38 @@ class WidgetLeadDetailsTests(TestCase):
     def _session_id(self) -> str:
         return self.client.cookies["widget_session_sk-test"].value
 
-    def test_first_visit_shows_lead_form(self):
+    def test_first_visit_opens_chat_directly(self):
         resp = self._visit()
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "/details/")
-        self.assertContains(resp, 'name="name"')
-        self.assertContains(resp, 'name="email"')
-        self.assertContains(resp, 'name="phone"')
-        self.assertNotContains(resp, 'id="chat-log"')
+        self.assertContains(resp, 'id="chat-log"')
+        self.assertContains(resp, "Hello!")  # welcome message present
+        self.assertNotContains(resp, "/details/")
+        self.assertNotContains(resp, 'name="email"')
 
         # A page view alone must not create any rows — drive-by iframe loads
         # would otherwise flood the dashboard with empty visitor threads.
         self.assertFalse(Customer.objects.filter(channel=self.channel).exists())
 
-    def test_submit_details_saves_customer_and_swaps_in_chat(self):
+    def test_travel_intent_triggers_scripted_questions_once(self):
+        """The bot asks for travel details only after the visitor shows intent,
+        and never repeats the question list."""
         self._visit()
         resp = self.client.post(
-            reverse("widget-details", args=[self._session_id()]),
-            {"site_key": "sk-test", "name": "Jane Doe", "email": "jane@example.com", "phone": "+15551234"},
+            reverse("widget-send", args=[self._session_id()]),
+            {"site_key": "sk-test", "message": "I'm looking for a 7 days Dubai package"},
         )
-        self.assertEqual(resp.status_code, 200)
         body = resp.content.decode()
-        self.assertIn('id="chat-log"', body)
-        self.assertIn("Hello!", body)  # welcome message present
-        self.assertNotIn("/details/", body)  # lead form replaced by the chat panel
+        self.assertEqual(body.count('class="msg-row bot"'), 2)  # reply + questions
+        self.assertIn("WhatsApp number", body)
 
-        customer = Customer.objects.get(channel=self.channel)
-        self.assertEqual(customer.display_name, "Jane Doe")
-        self.assertEqual(customer.email, "jane@example.com")
-        self.assertEqual(customer.phone, "+15551234")
-        self.assertTrue(customer.has_contact_details)
-
-    def test_returning_visitor_skips_lead_form(self):
-        self._visit()
-        self.client.post(
-            reverse("widget-details", args=[self._session_id()]),
-            {"site_key": "sk-test", "name": "Jane", "email": "jane@example.com"},
-        )
-        resp = self._visit()
-        self.assertNotContains(resp, "/details/")
-        self.assertContains(resp, 'id="chat-log"')
-
-    def test_email_is_required(self):
-        self._visit()
+        # A follow-up still carrying intent never repeats the list.
         resp = self.client.post(
-            reverse("widget-details", args=[self._session_id()]),
-            {"site_key": "sk-test", "name": "Jane"},  # missing email
+            reverse("widget-send", args=[self._session_id()]),
+            {"site_key": "sk-test", "message": "Also maybe a 5 star hotel"},
         )
-        self.assertEqual(resp.status_code, 422)
-        self.assertIn("This field is required", resp.content.decode())
-
-        customer = Customer.objects.get(channel=self.channel)
-        self.assertEqual(customer.email, "")
-        self.assertEqual(customer.display_name, "Website visitor")  # unchanged
-
-    def test_channel_can_opt_out_of_lead_capture(self):
-        Channel.objects.create(
-            name="Legacy Site",
-            channel_type="wordpress",
-            is_active=True,
-            credentials={"site_key": "sk-legacy", "collect_lead_details": False},
-        )
-        resp = self.client.get(reverse("widget-chat"), {"site_key": "sk-legacy"})
-        self.assertContains(resp, 'id="chat-log"')
-        self.assertNotContains(resp, "/details/")
+        body = resp.content.decode()
+        self.assertEqual(body.count('class="msg-row bot"'), 1)
+        self.assertNotIn("WhatsApp number", body)
 
     def test_send_message_fragment_has_no_visitor_bubble(self):
         """Optimistic UI: chat.html adds the visitor's bubble client-side the
@@ -101,9 +71,9 @@ class WidgetLeadDetailsTests(TestCase):
         body = resp.content.decode()
         self.assertNotIn("msg-row visitor", body)  # visitor bubble is client-side now
         self.assertIn("msg-row bot", body)         # bot reply still appended server-side
-        # Visitor + bot reply + scripted travel-profile question (first exchange).
+        # No travel intent → reply only; visitor + reply = 2 messages.
         self.assertEqual(
-            Message.objects.filter(conversation__customer__channel=self.channel).count(), 3,
+            Message.objects.filter(conversation__customer__channel=self.channel).count(), 2,
         )
 
     def test_bot_name_from_credentials_with_default_fallback(self):
@@ -125,13 +95,9 @@ class WidgetLeadDetailsTests(TestCase):
     def test_visitor_id_keeps_one_customer_without_cookies(self):
         """Browsers drop cookies inside third-party iframes; the host page's
         localStorage-backed ?v= id must keep the same visitor on ONE Customer
-        with ONE Conversation across visits, and skip the lead form on return."""
+        with ONE Conversation across visits."""
         vid = "v1s2t3u4v5w6x7y8"
         self.client.get(reverse("widget-chat"), {"site_key": "sk-test", "v": vid})
-        self.client.post(
-            reverse("widget-details", args=[vid]),
-            {"site_key": "sk-test", "name": "Jane", "email": "jane@example.com"},
-        )
         self.client.post(
             reverse("widget-send", args=[vid]),
             {"site_key": "sk-test", "message": "Hi again"},
@@ -141,15 +107,14 @@ class WidgetLeadDetailsTests(TestCase):
         # client simulates a cookie-blocking third-party iframe).
         cookieless = Client()
         resp = cookieless.get(reverse("widget-chat"), {"site_key": "sk-test", "v": vid})
-        self.assertNotContains(resp, "/details/")  # returning visitor skips the form
+        self.assertNotContains(resp, "/details/")
         self.assertContains(resp, "Hi again")      # prior history still visible
 
         self.assertEqual(Customer.objects.filter(channel=self.channel).count(), 1)
         customer = Customer.objects.get(channel=self.channel)
-        self.assertEqual(customer.email, "jane@example.com")
         self.assertEqual(customer.conversations.count(), 1)
-        # Visitor + bot reply + scripted travel-profile question (first exchange).
-        self.assertEqual(customer.conversations.get().messages.count(), 3)
+        # Visitor + bot reply ("Hi again" carries no travel intent).
+        self.assertEqual(customer.conversations.get().messages.count(), 2)
 
     def test_garbage_session_id_is_rejected(self):
         """The <str:session_id> converter accepts anything; junk must never
@@ -162,13 +127,6 @@ class WidgetLeadDetailsTests(TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertFalse(Customer.objects.filter(channel=self.channel).exists())
 
-        resp = self.client.post(
-            reverse("widget-details", args=["!!!not-an-id!!!"]),
-            {"site_key": "sk-test", "name": "Jane", "email": "jane@example.com"},
-        )
-        self.assertEqual(resp.status_code, 403)
-        self.assertFalse(Customer.objects.filter(channel=self.channel).exists())
-
     def test_reply_fragment_renders_bubbles_and_no_template_comment_leak(self):
         """Regression: the multi-line `{# #}` comment in bubbles.html once
         leaked into the live widget as literal chat text — Django `{# #}`
@@ -177,13 +135,13 @@ class WidgetLeadDetailsTests(TestCase):
         self._visit()
         resp = self.client.post(
             reverse("widget-send", args=[self._session_id()]),
-            {"site_key": "sk-test", "message": "Hi"},
+            {"site_key": "sk-test", "message": "Hi, do you have Dubai packages?"},
         )
         body = resp.content.decode()
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn("Optimistic UI", body)
         self.assertNotIn("HTMX response for", body)
         self.assertNotIn("#}", body)
-        # First exchange = the reply bubble + the scripted profile question.
+        # Travel intent → the reply bubble + the scripted profile questions.
         self.assertEqual(body.count('class="msg-row bot"'), 2)
         self.assertIn("WhatsApp number", body)

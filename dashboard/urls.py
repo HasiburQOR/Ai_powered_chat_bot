@@ -40,4 +40,5 @@ urlpatterns = [
     path("profiles/<uuid:pk>/", views.profile_detail, name="dashboard-profile-detail"),
     path("profiles/<uuid:pk>/card.png", views.profile_card_png, name="dashboard-profile-card"),
     path("profiles/<uuid:pk>/transcript.png", views.profile_transcript_png, name="dashboard-profile-transcript"),
+    path("profiles/<uuid:pk>/report.png", views.profile_report_png, name="dashboard-profile-report"),
 ]

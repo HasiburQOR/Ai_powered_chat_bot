@@ -15,9 +15,12 @@ Return a single JSON object. Include ONLY keys you actually found in the text:
   full_name (string), whatsapp_number (string), nationality (string),
   residence_country (string), gcc_residence_card (true/false),
   residence_card_expiry (YYYY-MM-DD), travel_date (YYYY-MM-DD),
-  trip_days (integer), adults (integer), children_ages (string like "5, 8").
+  trip_days (integer), adults (integer), children_ages (string like "5, 8"),
+  travel_intent (true/false: does the message express interest in a trip).
 Rules:
 - Fuzzy dates ("next month", "12 Oct", "in 3 weeks") become a best-effort YYYY-MM-DD using today's date; if impossible, omit the key.
+- travel_intent is true whenever the visitor asks about destinations, packages,
+  prices, visas, flights, hotels or any trip planning — in ANY language.
 - Never guess. Omit anything the customer did not state or clearly imply.
 - Output ONLY the JSON object — no commentary, no code fences."""
 
@@ -29,6 +32,7 @@ _CASTERS = {
     "full_name": str, "whatsapp_number": str, "nationality": str,
     "residence_country": str, "children_ages": str,
     "gcc_residence_card": lambda v: v if isinstance(v, bool) else str(v).strip().lower() in ("true", "yes", "1"),
+    "travel_intent": lambda v: v if isinstance(v, bool) else str(v).strip().lower() in ("true", "yes", "1"),
     "trip_days": int, "adults": int,
 }
 
@@ -119,6 +123,10 @@ def apply_fields(customer, fields: dict) -> "TravelProfile":
     profile = getattr(customer, "travel_profile", None)
     if profile is None:
         profile = TravelProfile(customer=customer)
+    # travel_intent is a state flag, not a detail: once True it never flips back
+    # (a later "not travelling after all" must not un-detect earlier interest).
+    if fields.pop("travel_intent", False):
+        profile.travel_intent_detected = True
     for key, value in fields.items():
         setattr(profile, key, value)
     if not profile.profile_number:
