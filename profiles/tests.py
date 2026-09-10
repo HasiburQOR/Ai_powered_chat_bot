@@ -383,23 +383,24 @@ class DashboardProfileTests(TestCase):
         self.assertTrue(resp.content.startswith(b"\x89PNG"))
         self.assertIn("BP-000001_Ravi_Kumar_report.png", resp["Content-Disposition"])
 
-    def test_detail_page_renders_and_edit_saves(self):
+    def test_detail_page_is_read_only(self):
+        """No manual entry: the page only displays what the AI extracted."""
         profile = self._make_profile()
         resp = self.client.get(reverse("dashboard-profile-detail", args=[profile.pk]))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Ravi Kumar")
         self.assertContains(resp, "Profile card (PNG)")
         self.assertContains(resp, "Full report (PNG)")
+        self.assertContains(resp, "Collected automatically by the AI")
+        self.assertNotContains(resp, "Save changes")
+        self.assertNotContains(resp, "<form")
+        # POSTing edits must be rejected and change nothing.
         resp = self.client.post(reverse("dashboard-profile-detail", args=[profile.pk]), {
-            "full_name": "Ravi K.", "whatsapp_number": "+911234567890",
-            "nationality": "Indian", "residence_country": "India",
-            "gcc_residence_card": "true", "residence_card_expiry": "2027-01-31",
-            "travel_date": "2026-12-01", "trip_days": "7", "adults": "2",
-            "children_ages": "5, 8",
+            "full_name": "Manual Override",
         })
-        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(resp.status_code, 405)
         profile.refresh_from_db()
-        self.assertEqual(profile.full_name, "Ravi K.")
+        self.assertEqual(profile.full_name, "Ravi Kumar")
 
     def test_profile_pages_require_staff(self):
         profile = self._make_profile()

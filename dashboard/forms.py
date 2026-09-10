@@ -4,7 +4,6 @@ from conversations.models import Conversation
 from knowledge.models import BotSettings, KnowledgeChunk, Rule
 from llm.models import LLMConfig
 from platforms.models import Channel
-from profiles.models import TravelProfile
 
 INPUT_CLASSES = (
     "w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-slate-900 "
@@ -134,22 +133,6 @@ class BotSettingsForm(StyledFormMixin, forms.ModelForm):
         widgets = {
             "fallback_message": forms.Textarea(attrs={"rows": 3}),
             "profile_intro_message": forms.Textarea(attrs={"rows": 5}),
-        }
-
-
-class TravelProfileForm(StyledFormMixin, forms.ModelForm):
-    """Staff-side edit of a bot-captured travel profile (Profiles page)."""
-
-    class Meta:
-        model = TravelProfile
-        fields = [
-            "full_name", "whatsapp_number", "nationality", "residence_country",
-            "gcc_residence_card", "residence_card_expiry", "travel_date",
-            "trip_days", "adults", "children_ages",
-        ]
-        widgets = {
-            "residence_card_expiry": forms.DateInput(attrs={"type": "date"}),
-            "travel_date": forms.DateInput(attrs={"type": "date"}),
         }
 
 

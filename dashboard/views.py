@@ -1,4 +1,5 @@
 import csv
+import datetime as dt
 import io
 import json
 import uuid as uuid_lib
@@ -8,7 +9,7 @@ from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 
 from conversations.models import Conversation, Message
 from knowledge.models import BotSettings, KnowledgeChunk, Rule
@@ -30,7 +31,6 @@ from .forms import (
     KnowledgeChunkForm,
     LLMConfigForm,
     RuleForm,
-    TravelProfileForm,
 )
 
 
@@ -514,18 +514,49 @@ def profile_export_xlsx(request):
     return response
 
 
+# Fields shown read-only on the profile page, in display order. `wide` spans
+# both grid columns in the template (longer values read better full-width).
+PROFILE_DISPLAY_FIELDS = [
+    ("full_name", "Name", True),
+    ("whatsapp_number", "WhatsApp number", True),
+    ("nationality", "Nationality", False),
+    ("residence_country", "Country of residence", False),
+    ("gcc_residence_card", "GCC residence card", False),
+    ("residence_card_expiry", "GCC card expiry", False),
+    ("travel_date", "Travel date", False),
+    ("trip_days", "Trip length (days)", False),
+    ("adults", "Adult travellers", False),
+    ("children_ages", "Children ages", True),
+]
+
+
+def _captured_fields(profile):
+    """Read-only display rows for the profile page — no editing, ever: the
+    extraction pipeline owns this data and updates it from the conversation."""
+    rows = []
+    for name, label, wide in PROFILE_DISPLAY_FIELDS:
+        value = getattr(profile, name)
+        if name == "gcc_residence_card":
+            text = {True: "Yes", False: "No"}.get(value, "")
+        elif isinstance(value, dt.date):
+            text = value.strftime("%d %b %Y")
+        else:
+            text = "" if value is None else str(value)
+        rows.append({"label": label, "value": text, "present": bool(text), "wide": wide})
+    return rows
+
+
 @staff_required
+@require_GET
 def profile_detail(request, pk):
+    """Read-only: shows what the bot captured from the conversation. There is
+    deliberately no edit form — profiles are built automatically from chat."""
     profile = get_object_or_404(
         TravelProfile.objects.select_related("customer", "customer__channel"), pk=pk)
-    form = TravelProfileForm(request.POST or None, instance=profile)
-    if request.method == "POST" and form.is_valid():
-        form.save()
-        return redirect("dashboard-profile-detail", pk=profile.pk)
     latest_conversation = profile.customer.conversations.order_by("-last_message_at").first()
     return render(request, "dashboard/profile_detail.html", {
         "profile": profile,
-        "form": form,
+        "captured_fields": _captured_fields(profile),
         "missing_fields": profile.missing_fields(),
         "latest_conversation": latest_conversation,
     })
