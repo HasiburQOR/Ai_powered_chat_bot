@@ -1,3 +1,6 @@
+import json
+import re
+
 from django import forms
 
 from conversations.models import Conversation
@@ -89,13 +92,47 @@ class KnowledgeChunkForm(StyledFormMixin, forms.ModelForm):
 
 
 class RuleForm(StyledFormMixin, forms.ModelForm):
+    """Rule editor. Trigger keywords are typed naturally ("refund, money back")
+    and stored as a JSON list on the model — staff never write raw JSON. (The
+    field used to be a bare JSONField: typing plain keywords failed validation
+    with "Enter a valid JSON.", which made the Save button look broken.)"""
+
+    trigger_keywords = forms.CharField(
+        label="Trigger keywords",
+        required=False,
+        help_text="Comma or newline separated — matched case-insensitively "
+                  "inside the visitor's message. Example: refund, money back",
+        widget=forms.Textarea(attrs={
+            "rows": 2,
+            "placeholder": "refund, money back, cancellation",
+        }),
+    )
+
     class Meta:
         model = Rule
         fields = ["name", "trigger_keywords", "response_text", "short_circuits_llm", "priority", "is_active"]
         widgets = {
-            "trigger_keywords": forms.Textarea(attrs={"rows": 2, "placeholder": '["hello", "pricing"]'}),
             "response_text": forms.Textarea(attrs={"rows": 3}),
         }
+
+    def clean_trigger_keywords(self):
+        raw = (self.cleaned_data.get("trigger_keywords") or "").strip()
+        if not raw:
+            raise forms.ValidationError("Add at least one trigger keyword.")
+        if raw.startswith("["):
+            # Tolerate a pasted JSON list too (e.g. copied from an old row).
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                data = None
+            if isinstance(data, list):
+                keywords = [str(k).strip() for k in data if str(k).strip()]
+                if keywords:
+                    return keywords
+        keywords = [part.strip() for part in re.split(r"[,\n]", raw) if part.strip()]
+        if not keywords:
+            raise forms.ValidationError("Add at least one trigger keyword.")
+        return keywords
 
 
 class ChannelForm(StyledFormMixin, forms.ModelForm):

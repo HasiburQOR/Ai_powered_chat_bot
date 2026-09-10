@@ -2,11 +2,12 @@ import csv
 from io import StringIO
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from conversations.models import Conversation, Customer, Message
+from knowledge.models import Rule
 from platforms.models import Channel
 
 
@@ -200,5 +201,88 @@ class ConversationFilterExportTests(TestCase):
         self.assertNotContains(resp, "to-teal-500/10")  # banner markup gone from base.html
         self.alice_conversation.refresh_from_db()
         self.assertEqual(self.alice_conversation.status, "human")  # change still persisted
+
+
+class RuleCrudTests(TestCase):
+    """Rule editor: trigger keywords typed naturally (comma-separated) must
+    save. Regression: the field was a raw JSONField, so plain input failed
+    validation with "Enter a valid JSON." and the Save button looked broken."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff = get_user_model().objects.create_user(
+            username="staff", password="pw", is_staff=True
+        )
+
+    def setUp(self):
+        self.client.force_login(self.staff)
+
+    @staticmethod
+    def _payload(**overrides):
+        data = {
+            "name": "Refund rule",
+            "trigger_keywords": "refund, money back",
+            "response_text": "Our refund policy covers X. Tell me your order id.",
+            "short_circuits_llm": "on",
+            "priority": "10",
+            "is_active": "on",
+        }
+        data.update(overrides)
+        return data
+
+    def test_create_with_plain_comma_keywords_saves(self):
+        resp = self.client.post(reverse("dashboard-rule-create"), self._payload())
+        self.assertEqual(resp.status_code, 200)
+        body = resp.content.decode()
+        self.assertTrue(body.lstrip().startswith("<tbody"), body[:120])  # OOB table refresh
+        self.assertIn("Refund rule", body)
+        rule = Rule.objects.get(name="Refund rule")
+        self.assertEqual(rule.trigger_keywords, ["refund", "money back"])
+
+    def test_create_accepts_newlines_and_extra_spaces(self):
+        self.client.post(reverse("dashboard-rule-create"), self._payload(
+            name="NL rule", trigger_keywords="visa\n\n  dubai trip ,  price"))
+        rule = Rule.objects.get(name="NL rule")
+        self.assertEqual(rule.trigger_keywords, ["visa", "dubai trip", "price"])
+
+    def test_create_still_accepts_pasted_json_list(self):
+        self.client.post(reverse("dashboard-rule-create"), self._payload(
+            name="JSON rule", trigger_keywords='["hello", "pricing"]'))
+        rule = Rule.objects.get(name="JSON rule")
+        self.assertEqual(rule.trigger_keywords, ["hello", "pricing"])
+
+    def test_create_without_keywords_is_rejected_with_visible_error(self):
+        resp = self.client.post(reverse("dashboard-rule-create"), self._payload(
+            trigger_keywords="   "))
+        self.assertEqual(resp.status_code, 422)
+        self.assertContains(resp, "Add at least one trigger keyword", status_code=422)
+        self.assertFalse(Rule.objects.exists())
+
+    def test_get_new_rule_form_renders_friendly_field(self):
+        resp = self.client.get(reverse("dashboard-rule-create"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Trigger keywords")
+        self.assertContains(resp, "refund, money back, cancellation")  # placeholder
+
+    def test_edit_rule_with_plain_keywords_saves(self):
+        rule = Rule.objects.create(
+            name="Old", trigger_keywords=["old"], response_text="x", priority=5)
+        resp = self.client.post(reverse("dashboard-rule-edit", args=[rule.pk]), self._payload(
+            name="Renamed", trigger_keywords="new keyword"))
+        self.assertEqual(resp.status_code, 200)
+        rule.refresh_from_db()
+        self.assertEqual(rule.name, "Renamed")
+        self.assertEqual(rule.trigger_keywords, ["new keyword"])
+
+    def test_rule_pages_require_staff(self):
+        rule = Rule.objects.create(
+            name="R", trigger_keywords=["x"], response_text="y", priority=1)
+        anonymous = Client()
+        for url in (
+            reverse("dashboard-rules"),
+            reverse("dashboard-rule-create"),
+            reverse("dashboard-rule-edit", args=[rule.pk]),
+        ):
+            self.assertEqual(anonymous.get(url).status_code, 302, url)
 
 

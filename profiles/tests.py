@@ -393,7 +393,10 @@ class DashboardProfileTests(TestCase):
         self.assertContains(resp, "Full report (PNG)")
         self.assertContains(resp, "Collected automatically by the AI")
         self.assertNotContains(resp, "Save changes")
-        self.assertNotContains(resp, "<form")
+        # The edit form rendered inputs for every profile field; none may exist
+        # now. (base.html's logout <form> is fine — we target the field inputs.)
+        self.assertNotContains(resp, 'name="full_name"')
+        self.assertNotContains(resp, 'name="whatsapp_number"')
         # POSTing edits must be rejected and change nothing.
         resp = self.client.post(reverse("dashboard-profile-detail", args=[profile.pk]), {
             "full_name": "Manual Override",
