@@ -19,10 +19,20 @@ Return a single JSON object. Include ONLY keys you actually found in the text:
   travel_intent (true/false: does the message express interest in a trip).
 Rules:
 - Fuzzy dates ("next month", "12 Oct", "in 3 weeks") become a best-effort YYYY-MM-DD using today's date; if impossible, omit the key.
+- When the customer states an exact date ("december 16"), use that exact
+  date — never shift it by a day or two.
+- A year alone ("residence card expiry 2030") is not a full date: omit the
+  key rather than inventing a month and day.
 - travel_intent is true whenever the visitor asks about destinations, packages,
   prices, visas, flights, hotels or any trip planning — in ANY language.
 - If a detail appears more than once with different values, use the most
   recent one (visitors correct themselves mid-conversation).
+- Copy names and phone/WhatsApp numbers EXACTLY as the customer typed them —
+  keep the leading "+" and country code; never rearrange, shorten or guess
+  digits.
+- When the customer gives a total party size plus children ("12 people, 2
+  children aged 5 and 8"), adults = total minus children (→ adults: 10) and
+  list every child's age in children_ages.
 - Never guess. Omit anything the customer did not state or clearly imply.
 - Output ONLY the JSON object — no commentary, no code fences."""
 

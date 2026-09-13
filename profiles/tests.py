@@ -52,6 +52,26 @@ class ExtractionTests(TestCase):
         fields = extract_fields("x", send_fn=lambda m, c: '{"trip_days": "soon", "adults": null}')
         self.assertEqual(fields, {})
 
+    def test_extraction_prompt_guards_against_live_llm_sloppiness(self):
+        """Live regressions shipped by the flaky model: mangled phone digits
+        (+5509324243 → 9242834034), "12 people, 2 children" → adults 7,
+        "december 16" → 14 Dec, "expiry 2030" → hallucinated 15 Dec 2030.
+        The system prompt must carry explicit counter-rules and actually be
+        sent as the first message."""
+        captured = {}
+
+        def fake_llm(messages, config):
+            captured["messages"] = messages
+            return "{}"
+
+        fields = extract_fields("anything", send_fn=fake_llm)
+        self.assertEqual(fields, {})
+        system_text = captured["messages"][0]["content"]
+        self.assertIn("EXACTLY as the customer typed", system_text)
+        self.assertIn("adults = total minus children", system_text)
+        self.assertIn("never shift it", system_text)
+        self.assertIn("year alone", system_text)
+
     def test_extract_fields_detects_travel_intent(self):
         fields = extract_fields(
             "we want to visit Dubai in December",
