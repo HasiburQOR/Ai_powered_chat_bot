@@ -5,16 +5,47 @@ from django.test import Client, TestCase
 from django.urls import reverse
 
 from conversations.models import Customer, Message
+from llm.models import LLMConfig
 from platforms.models import Channel
 
 
-class WidgetChatOpenTests(TestCase):
+# A closed port so any (unmocked) background LLM call — e.g. inline profile
+# extraction under CELERY_TASK_ALWAYS_EAGER — fails instantly instead of
+# reaching the real internet.
+FAST_FAIL_URL = "http://127.0.0.1:9/v1"
+
+
+class StubbedLLMMixin:
+    """A working (stubbed) LLM for plumbing tests: these tests care about
+    fragments, bubble counts and the once-only question list, not provider
+    behaviour. The first bot bubble must be a stubbed LLM answer rather than
+    the fallback text — the engine no longer sends that fallback on intent
+    turns (the scripted questions carry the turn alone when the LLM fails),
+    so "reply + questions = 2 bubbles" needs a reply that succeeds."""
+
+    REPLY = "Sure — we have several Dubai packages available."
+
+    @classmethod
+    def setUpTestData(cls):
+        LLMConfig.objects.create(
+            name="Primary", provider="openai_compatible",
+            model_name="stub-model", api_base_url=FAST_FAIL_URL, is_active=True)
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch("bot.engine.get_adapter")
+        patcher.start().return_value.send.return_value = self.REPLY
+        self.addCleanup(patcher.stop)
+
+
+class WidgetChatOpenTests(StubbedLLMMixin, TestCase):
     """The widget opens straight into the chat — there is no pre-chat form.
     Identity (visitor id) and travel details are collected from the
     conversation itself."""
 
     @classmethod
     def setUpTestData(cls):
+        super().setUpTestData()
         cls.channel = Channel.objects.create(
             name="Help Site",
             channel_type="wordpress",

@@ -11,6 +11,7 @@ from django.utils import timezone
 from bot.engine import handle_inbound_message
 from conversations.models import Conversation, Customer, Message
 from knowledge.models import BotSettings, Rule
+from llm.models import LLMConfig
 from platforms.models import Channel
 from profiles.extraction import apply_fields, extract_fields, parse_extraction_json
 from profiles.models import ProfileNumberCounter, TravelProfile
@@ -257,9 +258,32 @@ class EngineProfileIntroTests(TestCase):
         self.assertEqual(args[1], "hello there team")
 
 
-class WidgetSendTests(TestCase):
+class StubbedLLMMixin:
+    """A working (stubbed) LLM so widget plumbing tests exercise the success
+    path: the engine no longer sends the fallback text on intent turns (the
+    scripted questions carry the turn alone when the LLM fails), so
+    "reply + questions = 2 bubbles" needs a reply that succeeds."""
+
+    REPLY = "Sure — we have several Dubai packages available."
+
     @classmethod
     def setUpTestData(cls):
+        LLMConfig.objects.create(
+            name="Primary", provider="openai_compatible",
+            model_name="stub-model", api_base_url="http://127.0.0.1:9/v1",
+            is_active=True)
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch("bot.engine.get_adapter")
+        patcher.start().return_value.send.return_value = self.REPLY
+        self.addCleanup(patcher.stop)
+
+
+class WidgetSendTests(StubbedLLMMixin, TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
         cls.channel = Channel.objects.create(
             name="Site", channel_type="wordpress", is_active=True,
             credentials={"site_key": "sk-prof"})

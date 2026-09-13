@@ -413,3 +413,44 @@ class EngineGreetingRuleTests(EngineTestMixin, TestCase):
         self.assertEqual(out[0].content, self.WELCOME)
         mock_get_adapter.return_value.send.assert_not_called()
 
+
+class EngineFallbackIntroTests(EngineTestMixin, TestCase):
+    """When the LLM fails on the visitor's first travel-intent message, the
+    scripted questions must carry the turn ALONE. Visitors used to see the
+    warm fallback ("Sorry, I couldn't process that…") IMMEDIATELY followed by
+    the very question list that already answers the situation — the apology
+    added nothing and made the outage visible. Without intent (or when the
+    questions are disabled/already sent), the warm fallback still goes out."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        LLMConfig.objects.create(
+            name="Primary", provider="openai_compatible", model_name="stub",
+            api_base_url=FAST_FAIL_URL, is_active=True)
+
+    @patch("bot.engine.RETRY_BACKOFF_SECONDS", 0)
+    @patch("bot.engine.get_adapter")
+    def test_llm_failure_on_intent_sends_the_questions_only(self, mock_get_adapter):
+        mock_get_adapter.return_value.send.side_effect = RuntimeError("provider down")
+
+        out = handle_inbound_message(self._conversation(), "i want to visit armenia")
+
+        self.assertEqual(mock_get_adapter.return_value.send.call_count, 3)
+        self.assertEqual(len(out), 1)  # the questions — no apology bubble first
+        self.assertNotIn("send your message again", out[0].content)
+        self.assertIn("WhatsApp number", out[0].content)
+
+    @patch("bot.engine.RETRY_BACKOFF_SECONDS", 0)
+    @patch("bot.engine.get_adapter")
+    def test_llm_failure_without_intent_still_sends_the_fallback(self, mock_get_adapter):
+        mock_get_adapter.return_value.send.side_effect = RuntimeError("provider down")
+
+        out = handle_inbound_message(
+            self._conversation(), "do you offer group discounts?")
+
+        self.assertEqual(mock_get_adapter.return_value.send.call_count, 3)
+        self.assertEqual(len(out), 1)
+        self.assertIn("send your message again", out[0].content)
+        self.assertNotIn("WhatsApp number", out[0].content)
+

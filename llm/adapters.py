@@ -26,21 +26,29 @@ from requests.adapters import HTTPAdapter
 TIMEOUT = int(os.environ.get("LLM_TIMEOUT_SECONDS", "45"))
 
 _session_lock = threading.Lock()
-_session: requests.Session | None = None
+_http_session: requests.Session | None = None
 
 
 def _session() -> requests.Session:
-    """Shared HTTP session (created lazily, safe under concurrency)."""
-    global _session
-    if _session is None:
+    """Shared HTTP session (created lazily, safe under concurrency).
+
+    The cached session lives in `_http_session`: it used to be named
+    `_session` — shadowing this very function — so `_session()` returned the
+    function itself and every provider call died instantly with
+    "AttributeError: 'function' object has no attribute 'post'" (the
+    2026-09-13 production outage: 100% of LLM calls fell back with
+    provider_error before a single HTTP request left the box).
+    """
+    global _http_session
+    if _http_session is None:
         with _session_lock:
-            if _session is None:
+            if _http_session is None:
                 session = requests.Session()
                 adapter = HTTPAdapter(pool_connections=4, pool_maxsize=16)
                 session.mount("https://", adapter)
                 session.mount("http://", adapter)
-                _session = session
-    return _session
+                _http_session = session
+    return _http_session
 
 
 class LLMProviderError(RuntimeError):

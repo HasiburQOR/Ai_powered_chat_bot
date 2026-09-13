@@ -331,6 +331,13 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
                 rule.name, conversation.pk, residual,
             )
             rule = None  # A greeting rule must never swallow a real inquiry.
+
+    # The scripted travel-profile questions are computed ONCE, up front: the
+    # call is once-only per visitor (it stamps questions_sent_at) and the
+    # failure path below must know whether the questions will carry this
+    # turn. They are still appended AFTER the main reply (step 7 below).
+    intro = _maybe_profile_intro(conversation, settings, text)
+
     if rule and rule.short_circuits_llm:
         outbounds.append(Message.objects.create(
             conversation=conversation,
@@ -434,14 +441,19 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
                 )
             if abusive:
                 reply_text = ABUSIVE_FALLBACK_DEFAULT
-            else:
+            elif not intro:
                 reply_text = (settings.fallback_message or "").strip() or FALLBACK_DEFAULT
+            # else: the scripted questions (computed above) carry this turn —
+            # no apology bubble in front of them. Visitors used to see "Sorry,
+            # I couldn't process that…" IMMEDIATELY followed by the very
+            # question list that already answers the situation.
 
-        outbounds.append(Message.objects.create(
-            conversation=conversation,
-            sender_type=Message.SenderType.BOT,
-            content=reply_text,
-        ))
+        if reply_text:
+            outbounds.append(Message.objects.create(
+                conversation=conversation,
+                sender_type=Message.SenderType.BOT,
+                content=reply_text,
+            ))
 
         # 5. Memory summarization trigger — counts CUSTOMER messages only, so
         # every bot bubble (replies, the scripted questions, error bubbles)
@@ -459,8 +471,8 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
     # 6. Background travel-profile extraction from the visitor's own words.
     _dispatch_profile_extraction(conversation, text)
 
-    # 7. Scripted travel-profile questions, once, on the first travel-intent message.
-    intro = _maybe_profile_intro(conversation, settings, text)
+    # 7. Scripted travel-profile questions (computed up front, before the
+    # failure path), once, on the first travel-intent message.
     if intro:
         outbounds.append(Message.objects.create(
             conversation=conversation,
