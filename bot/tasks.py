@@ -100,7 +100,7 @@ def _summarize_customer(customer) -> bool:
     and the beat-driven idle summarizer — so their output and bookkeeping
     (including the memory_summary_at stamp) can never drift apart.
     Returns True when a fresh summary was stored."""
-    from conversations.models import Message
+    from conversations.models import Customer, Message
     from llm.adapters import get_adapter
     from llm.models import LLMConfig
 
@@ -151,6 +151,8 @@ def summarize_idle_customers():
     activity. Keeps memory fresh for visitors who idle mid-conversation (the
     message-count trigger only fires while they are actively chatting) and for
     return visits, without re-summarizing chatters who are still going."""
+    from conversations.models import Customer
+
     window_start = timezone.now() - timedelta(hours=48)
     window_end = timezone.now() - timedelta(minutes=30)
     stale = (

@@ -46,7 +46,7 @@ class EngineLLMRetryTests(EngineTestMixin, TestCase):
     def setUpTestData(cls):
         super().setUpTestData()
         LLMConfig.objects.create(
-            name="Primary", provider="openai", model_name="gpt-4o-mini",
+            name="Primary", provider="openai_compatible", model_name="gpt-4o-mini",
             api_base_url=FAST_FAIL_URL, is_active=True)
 
     @patch("bot.engine.RETRY_BACKOFF_SECONDS", 0)
@@ -138,7 +138,7 @@ class EngineProfileIntroTests(EngineTestMixin, TestCase):
         # blows up. FAST_FAIL_URL keeps any *un-mocked* call (e.g. the eager
         # extraction task) instantly failing instead of hanging.
         LLMConfig.objects.create(
-            name="Primary", provider="openai", model_name="gpt-4o-mini",
+            name="Primary", provider="openai_compatible", model_name="gpt-4o-mini",
             api_base_url=FAST_FAIL_URL, is_active=True)
 
     @patch("bot.engine.get_adapter")
@@ -236,7 +236,7 @@ class EngineAbuseTests(EngineTestMixin, TestCase):
     def setUpTestData(cls):
         super().setUpTestData()
         LLMConfig.objects.create(
-            name="Primary", provider="openai", model_name="gpt-4o-mini",
+            name="Primary", provider="openai_compatible", model_name="gpt-4o-mini",
             api_base_url=FAST_FAIL_URL, is_active=True)
 
     @patch("bot.engine.get_adapter")
@@ -345,7 +345,7 @@ class MemorySummarizerTests(EngineTestMixin, TestCase):
         from bot.tasks import _summarize_customer
 
         LLMConfig.objects.create(
-            name="Primary", provider="openai", model_name="gpt-4o-mini",
+            name="Primary", provider="openai_compatible", model_name="gpt-4o-mini",
             api_base_url=FAST_FAIL_URL, is_active=True)
         customer = Customer.objects.create(channel=self.channel, external_id="sum-1")
         conversation = Conversation.objects.create(
@@ -378,7 +378,7 @@ class EngineGreetingRuleTests(EngineTestMixin, TestCase):
         # test_greeting_glued_* assert the LLM mock was called — without an
         # active LLMConfig the engine skips the LLM path entirely.
         LLMConfig.objects.create(
-            name="Primary", provider="openai", model_name="gpt-4o-mini",
+            name="Primary", provider="openai_compatible", model_name="gpt-4o-mini",
             api_base_url=FAST_FAIL_URL, is_active=True)
         Rule.objects.create(
             name="Greeting",

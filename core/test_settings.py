@@ -25,6 +25,10 @@ SECURE_PROXY_SSL_HEADER = None
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 SECURE_HSTS_SECONDS = 0
+# The production VPS env pins ALLOWED_HOSTS to the real domain and the star
+# import above inherits it — dashboard tests that speak HTTP_HOST="localhost"
+# then die with DisallowedHost 400s. Allow exactly what the test client uses.
+ALLOWED_HOSTS = ["testserver", "localhost"]
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",

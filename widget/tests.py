@@ -1,10 +1,13 @@
+import html
 import re
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import Client, TestCase
 from django.urls import reverse
 
 from conversations.models import Customer, Message
+from knowledge.models import BOT_SETTINGS_CACHE_KEY
 from llm.models import LLMConfig
 from platforms.models import Channel
 
@@ -33,6 +36,11 @@ class StubbedLLMMixin:
 
     def setUp(self):
         super().setUp()
+        # BotSettings is cached for 30s — and the locmem cache, unlike the
+        # DB, is NOT rolled back between tests. A previous test that saved a
+        # mutated BotSettings (profile collection disabled) would otherwise
+        # silence the scripted questions for every later turn in this process.
+        cache.delete(BOT_SETTINGS_CACHE_KEY)
         patcher = patch("bot.engine.get_adapter")
         patcher.start().return_value.send.return_value = self.REPLY
         self.addCleanup(patcher.stop)
@@ -60,10 +68,16 @@ class WidgetChatOpenTests(StubbedLLMMixin, TestCase):
         return self.client.cookies["widget_session_sk-test"].value
 
     def _poll_url(self, fragment: str) -> str:
-        """Pull the poller's hx-get URL out of a /send/ response."""
+        """Pull the poller's hx-get URL out of a /send/ response.
+
+        The template writes `&amp;` inside the attribute (HTML escaping); a
+        real browser's parser decodes it back to `&` before HTMX issues the
+        GET. Feeding the raw attribute to the test client instead sends
+        `amp;after=…`, so the poll 403s with "Invalid `after` timestamp."
+        and the test sees an error body instead of bubbles."""
         match = re.search(r'hx-get="([^"]+)"', fragment)
         self.assertIsNotNone(match, "send response must contain the poller fragment")
-        return match.group(1)
+        return html.unescape(match.group(1))
 
     def test_first_visit_opens_chat_directly(self):
         resp = self._visit()

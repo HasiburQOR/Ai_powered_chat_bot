@@ -1,16 +1,19 @@
 """Travel-profile capture: numbering, LLM extraction, engine intro bubble."""
 import datetime as dt
+import html
+import re
 from io import BytesIO
 from unittest import mock
 
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
 from bot.engine import handle_inbound_message
 from conversations.models import Conversation, Customer, Message
-from knowledge.models import BotSettings, Rule
+from knowledge.models import BOT_SETTINGS_CACHE_KEY, BotSettings, Rule
 from llm.models import LLMConfig
 from platforms.models import Channel
 from profiles.extraction import apply_fields, extract_fields, parse_extraction_json
@@ -223,6 +226,11 @@ class StubbedLLMMixin:
 
     def setUp(self):
         super().setUp()
+        # BotSettings is cached for 30s — and the locmem cache, unlike the
+        # DB, is NOT rolled back between tests. Without this, the class's own
+        # "disable profile collection" test poisons the cache and every later
+        # intent turn sees its scripted questions silently switched off.
+        cache.delete(BOT_SETTINGS_CACHE_KEY)
         patcher = mock.patch("bot.engine.get_adapter")
         patcher.start().return_value.send.return_value = self.REPLY
         self.addCleanup(patcher.stop)
@@ -237,6 +245,9 @@ class EngineProfileIntroTests(StubbedLLMMixin, TestCase):
 
     @classmethod
     def setUpTestData(cls):
+        super().setUpTestData()  # the mixin's active LLMConfig — without it
+        # the engine sees config=None, skips the LLM loop, and the "reply +
+        # scripted questions" flow degrades to questions only.
         cls.channel = Channel.objects.create(name="WP", channel_type="wordpress")
         cls.customer = Customer.objects.create(channel=cls.channel, external_id="lead-2")
         cls.conversation = Conversation.objects.create(
@@ -349,6 +360,10 @@ class EngineProfileIntroTests(StubbedLLMMixin, TestCase):
 
 
 class WidgetSendTests(StubbedLLMMixin, TestCase):
+    """The widget send flow with the async pipeline: /send/ answers with the
+    typing-poller fragment and the bubbles arrive via /poll/ — these tests
+    follow the poller exactly like the widget's JS does."""
+
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
@@ -356,29 +371,37 @@ class WidgetSendTests(StubbedLLMMixin, TestCase):
             name="Site", channel_type="wordpress", is_active=True,
             credentials={"site_key": "sk-prof"})
 
-    def test_plain_greeting_renders_single_bot_bubble(self):
-        resp = self.client.post(
+    def _send(self, message):
+        return self.client.post(
             reverse("widget-send", args=["visitor1"]),
-            {"site_key": "sk-prof", "message": "hi"})
+            {"site_key": "sk-prof", "message": message})
+
+    def _poll(self, fragment: str) -> str:
+        """Follow the poller's hx-get URL. The template writes `&amp;` inside
+        the attribute; a real browser's HTML parser decodes it back to `&`
+        before HTMX issues the GET — mirror that here."""
+        match = re.search(r'hx-get="([^"]+)"', fragment)
+        self.assertIsNotNone(match, "send response must contain the poller fragment")
+        return self.client.get(html.unescape(match.group(1))).content.decode()
+
+    def test_plain_greeting_renders_single_bot_bubble(self):
+        resp = self._send("hi")
         body = resp.content.decode()
         self.assertEqual(resp.status_code, 200)
         self.assertNotIn("Optimistic UI", body)
         self.assertNotIn("#}", body)
+        poll_body = self._poll(body)
         # No travel intent → one reply bubble, no interrogation.
-        self.assertEqual(body.count('class="msg-row bot"'), 1)
-        self.assertNotIn("WhatsApp number", body)
+        self.assertEqual(poll_body.count('class="msg-row bot"'), 1)
+        self.assertNotIn("WhatsApp number", poll_body)
 
     def test_travel_request_adds_scripted_questions_once(self):
-        self.client.post(reverse("widget-send", args=["visitor1"]),
-                         {"site_key": "sk-prof", "message": "hi"})
-        resp = self.client.post(reverse("widget-send", args=["visitor1"]),
-                                {"site_key": "sk-prof", "message": "I need a Dubai package"})
-        body = resp.content.decode()
-        self.assertEqual(body.count('class="msg-row bot"'), 2)
-        self.assertIn("WhatsApp number", body)
-        resp = self.client.post(reverse("widget-send", args=["visitor1"]),
-                                {"site_key": "sk-prof", "message": "a 5 star hotel please"})
-        self.assertEqual(resp.content.decode().count('class="msg-row bot"'), 1)
+        self._send("hi")
+        poll_body = self._poll(self._send("I need a Dubai package").content.decode())
+        self.assertEqual(poll_body.count('class="msg-row bot"'), 2)
+        self.assertIn("WhatsApp number", poll_body)
+        poll_body = self._poll(self._send("a 5 star hotel please").content.decode())
+        self.assertEqual(poll_body.count('class="msg-row bot"'), 1)
 
 
 class DashboardProfileTests(TestCase):
