@@ -150,6 +150,45 @@ ABUSIVE_FALLBACK_DEFAULT = (
     "trip you have in mind and I'll do my best to help."
 )
 
+# --- Greeting-rule guard -----------------------------------------------------
+# A "Greeting" rule (hi / hello / hey...) may only answer messages that are
+# essentially JUST a greeting. Word-boundary rule matching makes "hi" match at
+# the start of "hi i want to visite armenia" — a real visitor got the canned
+# welcome twice while their actual Armenia inquiry was thrown away. When a
+# greeting-only rule matches a message that still carries a real request, the
+# engine drops the rule and lets the LLM answer.
+GREETING_KEYWORDS = frozenset({
+    "hi", "hii", "hello", "hey", "heyy", "start", "greetings",
+    "good morning", "good evening", "good afternoon",
+})
+
+# Non-greeting words that make the rest of the message a "real request".
+GREETING_RESIDUAL_WORDS = 3
+
+
+def _rule_keywords(rule) -> list:
+    keywords = rule.trigger_keywords or []
+    if isinstance(keywords, str):
+        keywords = [keywords]
+    return [str(kw).strip().lower() for kw in keywords if str(kw).strip()]
+
+
+def _is_pure_greeting_rule(rule) -> bool:
+    """True when every trigger keyword of the rule is a bare greeting."""
+    keywords = _rule_keywords(rule)
+    return bool(keywords) and all(kw in GREETING_KEYWORDS for kw in keywords)
+
+
+def _residual_word_count(text: str, rule) -> int:
+    """Substantive words left after removing the rule's keywords: 'hi i want
+    to visit armenia' still carries a real request; 'hi' / 'hello there' do
+    not. Letters-only words of 2+ chars count ('i' and digits don't)."""
+    residual = (text or "").lower()
+    for kw in _rule_keywords(rule):
+        residual = re.sub(rf"(?<!\w){re.escape(kw)}(?!\w)", " ", residual)
+    return len(re.findall(r"[^\W\d_]{2,}", residual, re.UNICODE))
+
+
 
 def _settings() -> BotSettings:
     """Singleton settings, cached briefly — every message used to pay a DB
@@ -282,6 +321,16 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
     # 2. Deterministic rules first.
     rule = match_rule(text)
     abusive = _is_abusive(text)
+    if rule and _is_pure_greeting_rule(rule):
+        residual = _residual_word_count(text, rule)
+        if residual >= GREETING_RESIDUAL_WORDS:
+            logger.info(
+                "Greeting rule '%s' skipped for conversation %s — the message "
+                "carries a real request (%d words besides the greeting), so "
+                "the LLM answers instead.",
+                rule.name, conversation.pk, residual,
+            )
+            rule = None  # A greeting rule must never swallow a real inquiry.
     if rule and rule.short_circuits_llm:
         outbounds.append(Message.objects.create(
             conversation=conversation,

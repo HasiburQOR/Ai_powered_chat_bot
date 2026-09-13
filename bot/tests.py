@@ -351,3 +351,65 @@ class MemorySummarizerTests(EngineTestMixin, TestCase):
 
         mock_get_adapter.return_value.send.return_value = "   "
         self.assertFalse(_summarize_customer(customer))
+
+class EngineGreetingRuleTests(EngineTestMixin, TestCase):
+    """A "Greeting" rule may only answer messages that are essentially JUST a
+    greeting. A real visitor wrote "hi i want to visite armenia" and got the
+    canned welcome — the whole word "hi" short-circuited the rule and the
+    Armenia inquiry was thrown away. Substantive messages must reach the LLM
+    even when they open with a greeting."""
+
+    WELCOME = "Hi there! Welcome to Travel Door."
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        Rule.objects.create(
+            name="Greeting",
+            trigger_keywords=["hi", "hello", "hey", "good morning", "good evening"],
+            response_text=cls.WELCOME,
+            short_circuits_llm=True,
+            priority=100,
+        )
+
+    @patch("bot.engine.get_adapter")
+    def test_pure_greeting_still_short_circuits(self, mock_get_adapter):
+        out = handle_inbound_message(self._conversation(), "hi")
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].content, self.WELCOME)
+        mock_get_adapter.return_value.send.assert_not_called()
+
+    @patch("bot.engine.get_adapter")
+    def test_greeting_glued_to_real_question_reaches_llm(self, mock_get_adapter):
+        """The exact production failure: "hi i want to visite armenia" used to
+        return the canned welcome and never reached the LLM."""
+        mock_get_adapter.return_value.send.return_value = "Armenia 5-day packages start from ..."
+
+        out = handle_inbound_message(self._conversation(), "hi i want to visite armenia")
+
+        self.assertGreaterEqual(len(out), 1)  # reply (+ maybe the scripted intro)
+        self.assertEqual(out[0].content, "Armenia 5-day packages start from ...")
+        self.assertFalse(any(self.WELCOME in m.content for m in out))
+        mock_get_adapter.return_value.send.assert_called_once()
+
+    @patch("bot.engine.get_adapter")
+    def test_banglish_greeting_mix_reaches_llm(self, mock_get_adapter):
+        mock_get_adapter.return_value.send.return_value = "Sure, let's plan it!"
+
+        out = handle_inbound_message(
+            self._conversation(), "hello ami armeniya gurte jete chai")
+
+        self.assertEqual(out[0].content, "Sure, let's plan it!")
+        self.assertFalse(any(self.WELCOME in m.content for m in out))
+        mock_get_adapter.return_value.send.assert_called_once()
+
+    @patch("bot.engine.get_adapter")
+    def test_greeting_with_a_courtesy_word_still_short_circuits(self, mock_get_adapter):
+        """One courtesy tail word is not a real request — the rule stays fast."""
+        out = handle_inbound_message(self._conversation(), "hello there")
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].content, self.WELCOME)
+        mock_get_adapter.return_value.send.assert_not_called()
+
