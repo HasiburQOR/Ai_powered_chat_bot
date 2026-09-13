@@ -115,6 +115,15 @@ class ApplyFieldsTests(TestCase):
         self.assertIn("Travel date", profile.missing_fields())
 
 
+    def test_llm_failure_returns_none_for_retry(self):
+        """An LLM transport failure is None (retry me), not {} (nothing
+        found) — the live glm-5.3-flash empty-content bug hid behind {}."""
+        def failing_llm(messages, config):
+            raise RuntimeError("provider down")
+
+        self.assertIsNone(extract_fields("hello", send_fn=failing_llm))
+
+
 class ExtractionTaskTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -140,10 +149,91 @@ class ExtractionTaskTests(TestCase):
         extract_profile_task(str(self.customer.pk), "   ")
         self.assertFalse(TravelProfile.objects.exists())
 
+    def test_extraction_runs_over_the_conversation_window(self):
+        """Details spread across turns must all reach the extractor: the live
+        glm failure captured 2 of ~7 stated fields because each message was
+        extracted in isolation."""
+        conversation = Conversation.objects.create(
+            customer=self.customer, last_message_at=timezone.now())
+        for content in ("my name is Ravi Kumar", "whatsapp +911234567890",
+                        "we are 2 adults"):
+            Message.objects.create(
+                conversation=conversation,
+                sender_type=Message.SenderType.CUSTOMER, content=content)
+        captured = {}
 
-class EngineProfileIntroTests(TestCase):
+        def fake_llm(messages, config):
+            captured["text"] = messages[1]["content"]
+            return ('{"full_name": "Ravi Kumar", "whatsapp_number": '
+                    '"+911234567890", "adults": 2}')
+
+        with mock.patch("profiles.extraction.LLMConfig") as fake_config_cls, \
+                mock.patch("profiles.extraction.get_adapter") as fake_get_adapter:
+            fake_config_cls.objects.filter.return_value.first.return_value = object()
+            fake_get_adapter.return_value.send = fake_llm
+            extract_profile_task(str(self.customer.pk), "we are 2 adults")
+
+        self.assertIn("my name is Ravi Kumar", captured["text"])
+        self.assertIn("whatsapp +911234567890", captured["text"])
+        profile = self.customer.travel_profile
+        self.assertEqual(profile.full_name, "Ravi Kumar")
+        self.assertEqual(profile.whatsapp_number, "+911234567890")
+        self.assertEqual(profile.adults, 2)
+
+    def test_transient_llm_failure_is_retried_not_dropped(self):
+        """The live glm-5.3-flash empty-content failure: extract_fields
+        returned None and the task silently "succeeded", losing the visitor's
+        details forever. It must raise Retry instead."""
+        from celery.exceptions import Retry
+
+        with mock.patch("profiles.extraction.extract_fields",
+                        return_value=None), \
+                mock.patch.object(extract_profile_task, "retry",
+                                  side_effect=Retry()) as fake_retry:
+            with self.assertRaises(Retry):
+                extract_profile_task(str(self.customer.pk), "hello")
+            fake_retry.assert_called_once()
+
+    def test_extraction_gives_up_loudly_after_max_retries(self):
+        """Retries exhausted → log a warning and return: never crash the
+        caller, never pretend success."""
+        from celery.exceptions import MaxRetriesExceededError
+
+        with mock.patch("profiles.extraction.extract_fields",
+                        return_value=None), \
+                mock.patch.object(extract_profile_task, "retry",
+                                  side_effect=MaxRetriesExceededError()):
+            extract_profile_task(str(self.customer.pk), "hello")  # must not raise
+
+
+class StubbedLLMMixin:
+    """A working (stubbed) LLM so engine/widget plumbing tests exercise the
+    success path: the engine no longer sends the fallback text on intent turns
+    (the scripted questions carry the turn alone when the LLM fails), so
+    "reply + questions = 2 bubbles" needs a reply that succeeds."""
+
+    REPLY = "Sure — we have several Dubai packages available."
+
+    @classmethod
+    def setUpTestData(cls):
+        LLMConfig.objects.create(
+            name="Primary", provider="openai_compatible",
+            model_name="stub-model", api_base_url="http://127.0.0.1:9/v1",
+            is_active=True)
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch("bot.engine.get_adapter")
+        patcher.start().return_value.send.return_value = self.REPLY
+        self.addCleanup(patcher.stop)
+
+
+class EngineProfileIntroTests(StubbedLLMMixin, TestCase):
     """The scripted profile questions ride along as a second bot bubble — but
-    only once, and only after the visitor shows travel intent."""
+    only once, and only after the visitor shows travel intent. (The stubbed
+    LLM keeps the "reply + questions" flow healthy; the LLM-failure path —
+    questions only, no apology bubble — is covered by bot's
+    EngineFallbackIntroTests and by WidgetSendTests below.)"""
 
     @classmethod
     def setUpTestData(cls):
@@ -224,7 +314,7 @@ class EngineProfileIntroTests(TestCase):
             outbounds = handle_inbound_message(self.conversation, "namaste, kya haal?")
         system_text = " ".join(
             m["content"] for m in captured["messages"] if m["role"] == "system")
-        self.assertIn("same language", system_text)
+        self.assertIn("same language", system_text.lower())
         self.assertIn("Never output Markdown", system_text)
         self.assertEqual(outbounds[0].content, "नमस्ते! मैं आपकी कैसे मदद कर सकता हूँ?")
 
@@ -256,28 +346,6 @@ class EngineProfileIntroTests(TestCase):
         args = fake_task.delay.call_args[0]
         self.assertEqual(args[0], str(self.customer.pk))
         self.assertEqual(args[1], "hello there team")
-
-
-class StubbedLLMMixin:
-    """A working (stubbed) LLM so widget plumbing tests exercise the success
-    path: the engine no longer sends the fallback text on intent turns (the
-    scripted questions carry the turn alone when the LLM fails), so
-    "reply + questions = 2 bubbles" needs a reply that succeeds."""
-
-    REPLY = "Sure — we have several Dubai packages available."
-
-    @classmethod
-    def setUpTestData(cls):
-        LLMConfig.objects.create(
-            name="Primary", provider="openai_compatible",
-            model_name="stub-model", api_base_url="http://127.0.0.1:9/v1",
-            is_active=True)
-
-    def setUp(self):
-        super().setUp()
-        patcher = mock.patch("bot.engine.get_adapter")
-        patcher.start().return_value.send.return_value = self.REPLY
-        self.addCleanup(patcher.stop)
 
 
 class WidgetSendTests(StubbedLLMMixin, TestCase):

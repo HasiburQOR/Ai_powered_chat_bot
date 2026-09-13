@@ -11,6 +11,20 @@ full request cycle without a Postgres server.
 """
 from .settings import *  # noqa: F401,F403
 
+# --- Test-safety overrides (must come after the star import) ---------------
+# The production VPS runs DEBUG=False, which switches on the SECURE_* block in
+# core/settings.py — and SECURE_SSL_REDIRECT defaults to True there. The Django
+# test client speaks plain http://testserver (and some tests use
+# HTTP_HOST="localhost"), so on the first-ever VPS suite run that block turned
+# ~50 tests into 301-redirect soup / DisallowedHost 400s. Pin every flag the
+# test client depends on explicitly, so the suite is hermetic no matter what
+# the production environment sets.
+DEBUG = True
+SECURE_SSL_REDIRECT = False
+SECURE_PROXY_SSL_HEADER = None
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
+SECURE_HSTS_SECONDS = 0
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",

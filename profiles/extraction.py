@@ -21,6 +21,8 @@ Rules:
 - Fuzzy dates ("next month", "12 Oct", "in 3 weeks") become a best-effort YYYY-MM-DD using today's date; if impossible, omit the key.
 - travel_intent is true whenever the visitor asks about destinations, packages,
   prices, visas, flights, hotels or any trip planning — in ANY language.
+- If a detail appears more than once with different values, use the most
+  recent one (visitors correct themselves mid-conversation).
 - Never guess. Omit anything the customer did not state or clearly imply.
 - Output ONLY the JSON object — no commentary, no code fences."""
 
@@ -86,10 +88,13 @@ def parse_extraction_json(raw: str) -> dict:
 
 
 def extract_fields(text: str, send_fn=None) -> dict:
-    """Return cleaned profile fields found in `text` ({} when none).
+    """Return cleaned profile fields found in `text`.
 
-    `send_fn(messages, config)` defaults to the active LLMConfig's adapter;
-    tests inject a stub instead of calling a real LLM.
+    ``{}`` when the text cleanly contains nothing usable; ``None`` when the
+    LLM call itself failed (timeout, or reasoning models answering HTTP 200
+    with EMPTY content — seen live with glm-5.3-flash) so the caller can
+    distinguish "nothing to save" from "try again". Tests inject `send_fn`
+    instead of calling a real LLM.
     """
     text = (text or "").strip()
     if not text:
@@ -111,8 +116,15 @@ def extract_fields(text: str, send_fn=None) -> dict:
         raw = send_fn(messages, config)
     except Exception:
         logger.warning("Travel-profile extraction LLM call failed", exc_info=True)
-        return {}
-    return _coerce(parse_extraction_json(raw))
+        return None  # transient — the task retries these
+    fields = _coerce(parse_extraction_json(raw))
+    if not fields:
+        # A clean "nothing found". Logged so half-empty profiles are
+        # diagnosable from the worker log alone (the live glm-5.3-flash
+        # empty-content bug was invisible: no success line, no error).
+        logger.info(
+            "Travel-profile extraction found no usable details in: %.200s", text)
+    return fields
 
 
 def apply_fields(customer, fields: dict) -> "TravelProfile":

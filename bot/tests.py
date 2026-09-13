@@ -130,6 +130,17 @@ class EngineLLMRetryTests(EngineTestMixin, TestCase):
 class EngineProfileIntroTests(EngineTestMixin, TestCase):
     """Intent detection and the once-only scripted questions."""
 
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        # The engine never calls the LLM without an active LLMConfig — the
+        # ladder is skipped entirely and every send.* mock assertion below
+        # blows up. FAST_FAIL_URL keeps any *un-mocked* call (e.g. the eager
+        # extraction task) instantly failing instead of hanging.
+        LLMConfig.objects.create(
+            name="Primary", provider="openai", model_name="gpt-4o-mini",
+            api_base_url=FAST_FAIL_URL, is_active=True)
+
     @patch("bot.engine.get_adapter")
     def test_armania_misspelling_still_triggers_intro(self, mock_get_adapter):
         # A real visitor wrote "armania"; the keyword list must catch it.
@@ -364,6 +375,11 @@ class EngineGreetingRuleTests(EngineTestMixin, TestCase):
     @classmethod
     def setUpTestData(cls):
         super().setUpTestData()
+        # test_greeting_glued_* assert the LLM mock was called — without an
+        # active LLMConfig the engine skips the LLM path entirely.
+        LLMConfig.objects.create(
+            name="Primary", provider="openai", model_name="gpt-4o-mini",
+            api_base_url=FAST_FAIL_URL, is_active=True)
         Rule.objects.create(
             name="Greeting",
             trigger_keywords=["hi", "hello", "hey", "good morning", "good evening"],

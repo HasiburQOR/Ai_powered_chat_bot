@@ -419,8 +419,16 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
                     )
                     time.sleep(RETRY_BACKOFF_SECONDS * (attempt_number - 1))
                 try:
-                    reply_text = get_adapter(config).send(attempt_messages, config)
-                    break
+                    candidate = get_adapter(config).send(attempt_messages, config)
+                    if candidate and candidate.strip():
+                        reply_text = candidate
+                        break
+                    # Some reasoning models answer HTTP 200 with EMPTY content
+                    # (seen live: glm-5.3-flash burned 20s then returned "") —
+                    # treat a blank reply as a failed attempt and descend the
+                    # ladder instead of shipping nothing to the visitor.
+                    last_error = LLMEmptyResponseError(
+                        "provider returned empty content")
                 except Exception as exc:
                     last_error = exc
 
