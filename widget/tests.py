@@ -4,19 +4,51 @@ from unittest.mock import patch
 from urllib.parse import unquote
 
 from django.core.cache import cache
-from django.test import Client, TestCase
+from django.test import Client, SimpleTestCase, TestCase
 from django.urls import reverse
 
 from conversations.models import Customer, Message
 from knowledge.models import BOT_SETTINGS_CACHE_KEY
 from llm.models import LLMConfig
 from platforms.models import Channel
+from widget.templatetags.chat_format import chat_format
 
 
 # A closed port so any (unmocked) background LLM call — e.g. inline profile
 # extraction under CELERY_TASK_ALWAYS_EAGER — fails instantly instead of
 # reaching the real internet.
 FAST_FAIL_URL = "http://127.0.0.1:9/v1"
+
+
+class ChatFormatFilterTests(SimpleTestCase):
+    """The bot's prompt asks for **bold** key facts; the widget renders them
+    as real <strong>. Escape FIRST so no markup from the model (or a visitor
+    echoing it back) can ever inject HTML into the bubble."""
+
+    def test_bold_markers_become_strong(self):
+        self.assertEqual(
+            chat_format("Got it - **Baku, 12-16 Dec** for 4 adults"),
+            "Got it - <strong>Baku, 12-16 Dec</strong> for 4 adults")
+
+    def test_html_is_escaped_before_strong_injection(self):
+        out = chat_format("**<script>alert(1)</script>**")
+        self.assertNotIn("<script>", out)
+        self.assertIn("&lt;script&gt;", out)
+
+    def test_unpaired_markers_left_untouched(self):
+        self.assertEqual(
+            chat_format("2 ** 3 and a stray **"),
+            "2 ** 3 and a stray **")
+
+    def test_none_and_empty_render_nothing(self):
+        self.assertEqual(chat_format(None), "")
+        self.assertEqual(chat_format(""), "")
+
+    def test_filter_resolves_inside_a_template(self):
+        from django.template import Context, Template
+        out = Template("{% load chat_format %}{{ t|chat_format }}").render(
+            Context({"t": "**bold** moves"}))
+        self.assertEqual(out, "<strong>bold</strong> moves")
 
 
 class StubbedLLMMixin:
@@ -108,7 +140,7 @@ class WidgetChatOpenTests(StubbedLLMMixin, TestCase):
 
         poll_body = self.client.get(self._poll_url(body)).content.decode()
         self.assertEqual(poll_body.count('class="msg-row bot"'), 2)  # reply + questions
-        self.assertIn("WhatsApp number", poll_body)
+        self.assertIn("travelling", poll_body)
 
         # A follow-up still carrying intent never repeats the list.
         resp = self.client.post(
@@ -238,7 +270,7 @@ class WidgetChatOpenTests(StubbedLLMMixin, TestCase):
         self.assertNotIn("#}", poll_body)
         # Travel intent → the reply bubble + the scripted profile questions.
         self.assertEqual(poll_body.count('class="msg-row bot"'), 2)
-        self.assertIn("WhatsApp number", poll_body)
+        self.assertIn("travelling", poll_body)
 
     @patch("widget.views.process_widget_message")
     def test_send_falls_back_to_inline_processing_when_broker_is_down(self, mock_task):
@@ -253,7 +285,7 @@ class WidgetChatOpenTests(StubbedLLMMixin, TestCase):
         body = resp.content.decode()
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(body.count('class="msg-row bot"'), 2)  # reply + questions, inline
-        self.assertIn("WhatsApp number", body)
+        self.assertIn("travelling", body)
 
     def test_poll_endpoint_validates_session_site_and_timestamp(self):
         """The poller is a public GET endpoint: junk sessions, wrong site keys

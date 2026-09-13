@@ -1,4 +1,4 @@
-{% load static %}
+{% load static chat_format %}
 {# The chat UI. Rendered by the chat page; lead details are collected from the conversation itself. #}
 <header class="chat-header" style="background: {{ theme_color|default:'#4f46e5' }}">
   <span class="chat-brand">
@@ -16,10 +16,10 @@
     {% if message.sender_type == "customer" %}
       <div class="msg-row visitor"><div class="bubble visitor" style="background: {{ theme_color|default:'#4f46e5' }}">{{ message.content }}</div></div>
     {% elif message.sender_type == "bot" %}
-      <div class="msg-row bot"><div class="bubble bot">{{ message.content }}</div></div>
+      <div class="msg-row bot"><div class="bubble bot">{{ message.content|chat_format }}</div></div>
     {% endif %}
   {% endfor %}
-  <div class="msg-row bot"><div class="bubble bot">{{ welcome_message }}</div></div>
+  <div class="msg-row bot"><div class="bubble bot">{{ welcome_message|chat_format }}</div></div>
 </div>
 
 {# No hx-indicator needed: chat.html appends an in-log typing bubble optimistically at submit. #}

@@ -5,29 +5,37 @@ from celery.exceptions import MaxRetriesExceededError
 
 logger = logging.getLogger(__name__)
 
-# How many of the customer's own recent messages the extractor sees at once.
-# Visitors answer the profile questions across several turns — sometimes as a
-# single garbled burst ("Bangladesh: YEs have gcc , redence card expored date
-# 28 y days, 6 people children under 5 2") — and extracting one message in
-# isolation lost every detail it couldn't parse alone (seen live: BP-000009
-# captured 2 of ~7 stated fields).
-WINDOW_SIZE = 10
+# How many recent messages (BOTH sides) the extractor sees at once, as a
+# labelled transcript. Visitors answer the profile questions across several
+# turns — sometimes as a single garbled burst ("Bangladesh: YEs have gcc ,
+# redence card expored date 28 y days, 6 people children under 5 2") — and
+# extracting one message in isolation lost every detail it couldn't parse
+# alone (seen live: BP-000009 captured 2 of ~7 stated fields). Including the
+# bot's lines labels each answer with the question it belongs to: a bare
+# "01712345678" is uninterpretable alone, obvious right after
+# "[Bot] ... WhatsApp number?".
+WINDOW_SIZE = 14
 
 
 def _conversation_window_text(customer) -> str:
-    """The customer's last WINDOW_SIZE inbound messages, oldest first."""
+    """A labelled transcript of the customer's last WINDOW_SIZE messages,
+    oldest first: one "[Bot] ..." / "[Customer] ..." line per message."""
     from conversations.models import Message
 
     recent = list(
-        Message.objects.filter(
-            conversation__customer=customer,
-            sender_type=Message.SenderType.CUSTOMER,
-        )
+        Message.objects.filter(conversation__customer=customer)
         .order_by("-created_at")
-        .values_list("content", flat=True)[:WINDOW_SIZE]
+        .values_list("sender_type", "content")[:WINDOW_SIZE]
     )
     recent.reverse()
-    return "\n".join(line.strip() for line in recent if line and line.strip())
+    lines = []
+    for sender_type, content in recent:
+        content = (content or "").strip()
+        if not content:
+            continue
+        who = "Bot" if sender_type == Message.SenderType.BOT else "Customer"
+        lines.append(f"[{who}] {content}")
+    return "\n".join(lines)
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
@@ -53,7 +61,9 @@ def extract_profile_task(self, customer_id: str, text: str = ""):
     if not extraction_text:
         return
 
-    fields = extract_fields(extraction_text)
+    profile = getattr(customer, "travel_profile", None)
+    missing = profile.missing_fields() if profile else None
+    fields = extract_fields(extraction_text, missing_fields=missing)
     if fields is None:
         try:
             raise self.retry(countdown=self.default_retry_delay)

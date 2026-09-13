@@ -5,12 +5,12 @@ import logging
 
 from django.utils import timezone
 
-from llm.adapters import get_adapter
+from llm.adapters import LLMProviderError, get_adapter
 from llm.models import LLMConfig
 
 logger = logging.getLogger(__name__)
 
-EXTRACTION_SYSTEM_PROMPT = """You read a chat message from a travel-agency customer and extract trip-lead details.
+EXTRACTION_SYSTEM_PROMPT = """You read a chat window from a travel-agency conversation and extract trip-lead details the CUSTOMER stated.
 Return a single JSON object. Include ONLY keys you actually found in the text:
   full_name (string), whatsapp_number (string), nationality (string),
   residence_country (string), gcc_residence_card (true/false),
@@ -33,6 +33,14 @@ Rules:
 - When the customer gives a total party size plus children ("12 people, 2
   children aged 5 and 8"), adults = total minus children (→ adults: 10) and
   list every child's age in children_ages.
+- Chat-window lines are labelled [Bot] or [Customer]. Extract details ONLY
+  from [Customer] lines; use [Bot] lines only to understand what question an
+  answer belongs to ("01712345678" right after the bot asks for WhatsApp IS
+  the WhatsApp number). Unlabelled lines are customer lines.
+- The customer may write in ANY language or script — extract the stated
+  detail anyway; do not skip it because the language differs.
+- Fields listed as "still missing" in the user message deserve extra
+  attention — look hard for those, but still never invent them.
 - Never guess. Omit anything the customer did not state or clearly imply.
 - Output ONLY the JSON object — no commentary, no code fences."""
 
@@ -97,14 +105,38 @@ def parse_extraction_json(raw: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def extract_fields(text: str, send_fn=None) -> dict:
+# Structured extraction needs a cold model: the chat temperature (often 0.7)
+# made the extractor itself "creative" — visitors had to repeat details the
+# bot then mis-parsed or dropped entirely.
+EXTRACTION_TEMPERATURE = 0.1
+
+
+def _call_extraction_llm(send_fn, messages, config):
+    """JSON-mode call with a graceful fallback: not every OpenAI-compatible
+    provider implements response_format, and one that rejects it answers
+    HTTP 400 — retry the identical call without the option instead of
+    dropping the whole extraction."""
+    try:
+        return send_fn(
+            messages, config,
+            temperature=EXTRACTION_TEMPERATURE,
+            response_format={"type": "json_object"},
+        )
+    except LLMProviderError as exc:
+        if "HTTP 400" in str(exc):
+            return send_fn(messages, config, temperature=EXTRACTION_TEMPERATURE)
+        raise
+
+
+def extract_fields(text: str, send_fn=None, missing_fields=None) -> dict:
     """Return cleaned profile fields found in `text`.
 
     ``{}`` when the text cleanly contains nothing usable; ``None`` when the
     LLM call itself failed (timeout, or reasoning models answering HTTP 200
     with EMPTY content — seen live with glm-5.3-flash) so the caller can
     distinguish "nothing to save" from "try again". Tests inject `send_fn`
-    instead of calling a real LLM.
+    instead of calling a real LLM. `missing_fields` (human labels) focuses
+    the model on what the profile still lacks.
     """
     text = (text or "").strip()
     if not text:
@@ -115,15 +147,21 @@ def extract_fields(text: str, send_fn=None) -> dict:
         if config is None:
             return {}
         send_fn = get_adapter(config).send
+    focus = ""
+    if missing_fields:
+        focus = (
+            "Still missing from the customer's profile (look extra hard for "
+            f"these): {', '.join(missing_fields)}.\n"
+        )
     messages = [
         {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
         {"role": "user", "content": (
-            f"Today is {timezone.now():%Y-%m-%d}. Customer message(s):\n"
+            f"Today is {timezone.now():%Y-%m-%d}. {focus}Chat window:\n"
             f"\"\"\"\n{text}\n\"\"\"\nJSON:"
         )},
     ]
     try:
-        raw = send_fn(messages, config)
+        raw = _call_extraction_llm(send_fn, messages, config)
     except Exception:
         logger.warning("Travel-profile extraction LLM call failed", exc_info=True)
         return None  # transient — the task retries these

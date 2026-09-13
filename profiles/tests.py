@@ -14,9 +14,15 @@ from django.utils import timezone
 from bot.engine import handle_inbound_message
 from conversations.models import Conversation, Customer, Message
 from knowledge.models import BOT_SETTINGS_CACHE_KEY, BotSettings, Rule
+from llm.adapters import LLMProviderError
 from llm.models import LLMConfig
 from platforms.models import Channel
-from profiles.extraction import apply_fields, extract_fields, parse_extraction_json
+from profiles.extraction import (
+    EXTRACTION_TEMPERATURE,
+    apply_fields,
+    extract_fields,
+    parse_extraction_json,
+)
 from profiles.models import ProfileNumberCounter, TravelProfile
 from profiles.tasks import extract_profile_task
 
@@ -38,7 +44,7 @@ class ExtractionTests(TestCase):
         self.assertEqual(parse_extraction_json(""), {})
 
     def test_extract_fields_coerces_and_drops_invalid(self):
-        def fake_llm(messages, config):
+        def fake_llm(messages, config, **kwargs):
             return ('```json\n{"full_name": "Ravi", "trip_days": "12", "adults": 2, '
                     '"travel_date": "2026-10-12", "junk": "x"}\n```')
 
@@ -49,7 +55,7 @@ class ExtractionTests(TestCase):
         })
 
     def test_extract_fields_bad_types_dropped(self):
-        fields = extract_fields("x", send_fn=lambda m, c: '{"trip_days": "soon", "adults": null}')
+        fields = extract_fields("x", send_fn=lambda m, c, **kw: '{"trip_days": "soon", "adults": null}')
         self.assertEqual(fields, {})
 
     def test_extraction_prompt_guards_against_live_llm_sloppiness(self):
@@ -60,7 +66,7 @@ class ExtractionTests(TestCase):
         sent as the first message."""
         captured = {}
 
-        def fake_llm(messages, config):
+        def fake_llm(messages, config, **kwargs):
             captured["messages"] = messages
             return "{}"
 
@@ -75,13 +81,13 @@ class ExtractionTests(TestCase):
     def test_extract_fields_detects_travel_intent(self):
         fields = extract_fields(
             "we want to visit Dubai in December",
-            send_fn=lambda m, c: '{"travel_intent": true}')
+            send_fn=lambda m, c, **kw: '{"travel_intent": true}')
         self.assertEqual(fields, {"travel_intent": True})
 
     def test_blank_text_never_calls_llm(self):
         called = []
 
-        def fake_llm(messages, config):
+        def fake_llm(messages, config, **kwargs):
             called.append(1)
             return "{}"
 
@@ -141,10 +147,29 @@ class ApplyFieldsTests(TestCase):
     def test_llm_failure_returns_none_for_retry(self):
         """An LLM transport failure is None (retry me), not {} (nothing
         found) — the live glm-5.3-flash empty-content bug hid behind {}."""
-        def failing_llm(messages, config):
+        def failing_llm(messages, config, **kwargs):
             raise RuntimeError("provider down")
 
         self.assertIsNone(extract_fields("hello", send_fn=failing_llm))
+
+    def test_json_mode_400_falls_back_to_a_plain_retry(self):
+        """Not every provider implements response_format; one rejects it with
+        HTTP 400. The extraction must retry the identical call without the
+        option instead of being lost."""
+        calls = []
+
+        def fake_llm(messages, config, **kwargs):
+            calls.append(kwargs)
+            if kwargs.get("response_format") is not None:
+                raise LLMProviderError(
+                    "HTTP 400 from stub-model: response_format not supported")
+            return '{"full_name": "Ravi"}'
+
+        fields = extract_fields("my name is Ravi", send_fn=fake_llm)
+        self.assertEqual(fields, {"full_name": "Ravi"})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1].get("response_format"), None)
+        self.assertEqual(calls[1].get("temperature"), EXTRACTION_TEMPERATURE)
 
 
 class ExtractionTaskTests(TestCase):
@@ -157,7 +182,7 @@ class ExtractionTaskTests(TestCase):
         with mock.patch("profiles.extraction.LLMConfig") as fake_config_cls, \
                 mock.patch("profiles.extraction.get_adapter") as fake_get_adapter:
             fake_config_cls.objects.filter.return_value.first.return_value = object()
-            fake_get_adapter.return_value.send = lambda messages, config: \
+            fake_get_adapter.return_value.send = lambda messages, config, **kwargs: \
                 '{"full_name": "Ravi", "travel_date": "2026-10-12", "travel_intent": true}'
             extract_profile_task(str(self.customer.pk), "I am Ravi, travelling in October")
 
@@ -185,7 +210,7 @@ class ExtractionTaskTests(TestCase):
                 sender_type=Message.SenderType.CUSTOMER, content=content)
         captured = {}
 
-        def fake_llm(messages, config):
+        def fake_llm(messages, config, **kwargs):
             captured["text"] = messages[1]["content"]
             return ('{"full_name": "Ravi Kumar", "whatsapp_number": '
                     '"+911234567890", "adults": 2}')
@@ -202,6 +227,43 @@ class ExtractionTaskTests(TestCase):
         self.assertEqual(profile.full_name, "Ravi Kumar")
         self.assertEqual(profile.whatsapp_number, "+911234567890")
         self.assertEqual(profile.adults, 2)
+
+    def test_extraction_window_is_a_labelled_transcript_of_both_sides(self):
+        """Bot lines must reach the extractor too, labelled: a bare
+        '01712345678' is uninterpretable alone, obvious right after the bot
+        asks for the WhatsApp number. The call must also be cold + JSON
+        mode."""
+        conversation = Conversation.objects.create(
+            customer=self.customer, last_message_at=timezone.now())
+        pairs = [
+            (Message.SenderType.BOT, "Sure! Which WhatsApp number reaches you best?"),
+            (Message.SenderType.CUSTOMER, "01712345678"),
+            (Message.SenderType.BOT, "Got it. How many people are travelling?"),
+            (Message.SenderType.CUSTOMER, "4 adults"),
+        ]
+        for sender, content in pairs:
+            Message.objects.create(
+                conversation=conversation, sender_type=sender, content=content)
+        captured = {}
+
+        def fake_llm(messages, config, **kwargs):
+            captured["text"] = messages[1]["content"]
+            captured["kwargs"] = kwargs
+            return '{"whatsapp_number": "01712345678", "adults": 4}'
+
+        with mock.patch("profiles.extraction.LLMConfig") as fake_config_cls, \
+                mock.patch("profiles.extraction.get_adapter") as fake_get_adapter:
+            fake_config_cls.objects.filter.return_value.first.return_value = object()
+            fake_get_adapter.return_value.send = fake_llm
+            extract_profile_task(str(self.customer.pk), "4 adults")
+
+        text = captured["text"]
+        self.assertIn("[Bot] Sure! Which WhatsApp number", text)
+        self.assertIn("[Customer] 01712345678", text)
+        self.assertEqual(captured["kwargs"].get("temperature"),
+                         EXTRACTION_TEMPERATURE)
+        self.assertEqual(captured["kwargs"].get("response_format"),
+                         {"type": "json_object"})
 
     def test_transient_llm_failure_is_retried_not_dropped(self):
         """The live glm-5.3-flash empty-content failure: extract_fields
@@ -287,7 +349,7 @@ class EngineProfileIntroTests(StubbedLLMMixin, TestCase):
         outbounds = handle_inbound_message(
             self.conversation, "hello, I want a 7 days Dubai package")
         self.assertEqual(len(outbounds), 2)
-        self.assertIn("WhatsApp number", outbounds[1].content)
+        self.assertIn("travelling", outbounds[1].content)
         self.assertTrue(all(m.sender_type == Message.SenderType.BOT for m in outbounds))
         profile = self.customer.travel_profile
         self.assertTrue(profile.travel_intent_detected)
@@ -346,7 +408,7 @@ class EngineProfileIntroTests(StubbedLLMMixin, TestCase):
         system_text = " ".join(
             m["content"] for m in captured["messages"] if m["role"] == "system")
         self.assertIn("same language", system_text.lower())
-        self.assertIn("Never output Markdown", system_text)
+        self.assertIn("**bold**", system_text)
         self.assertEqual(outbounds[0].content, "नमस्ते! मैं आपकी कैसे मदद कर सकता हूँ?")
 
     def test_profile_state_included_in_llm_context(self):
@@ -369,6 +431,65 @@ class EngineProfileIntroTests(StubbedLLMMixin, TestCase):
         self.assertIn("Travel profile", system_text)
         self.assertIn("captured: Name: Ravi", system_text)
         self.assertIn("still missing", system_text)
+
+    def test_profile_context_names_exactly_one_next_detail(self):
+        """The context must name ONE detail to ask next, in collection-
+        priority order — the production bot stacked several questions or
+        re-asked details the visitor had already given."""
+        apply_fields(self.customer, {"full_name": "Ravi", "nationality": "Indian"})
+        captured = {}
+
+        class FakeAdapter:
+            def send(self, messages, config):
+                captured["messages"] = messages
+                return "ok"
+
+        LLMConfig.objects.create(
+            name="Test", provider="anthropic", api_key="k",
+            model_name="claude-sonnet-4-6", system_prompt="Be helpful.", is_active=True)
+        with mock.patch("bot.engine.get_adapter", return_value=FakeAdapter()):
+            handle_inbound_message(self.conversation, "what trips do you offer?")
+        system_text = " ".join(
+            m["content"] for m in captured["messages"] if m["role"] == "system")
+        found = re.search(r"NEXT DETAIL TO ASK.*?: (.+?)\.", system_text)
+        self.assertTrue(found, "profile context must name the next detail to ask")
+        self.assertEqual(found.group(1), "WhatsApp number")
+
+    def test_next_missing_detail_follows_collection_priority(self):
+        """WhatsApp first (contactability), then the trip-defining facts, then
+        identity extras — deliberately not the REQUIRED_FIELDS order."""
+        profile = apply_fields(self.customer, {"full_name": "Ravi", "nationality": "Indian"})
+        self.assertEqual(profile.next_missing_detail(), "WhatsApp number")
+        apply_fields(self.customer, {"whatsapp_number": "+911234567890"})
+        self.assertEqual(profile.next_missing_detail(), "Travel date")
+        apply_fields(self.customer, {
+            "travel_date": dt.date(2026, 12, 1), "trip_days": 7, "adults": 2,
+            "residence_country": "India",
+        })
+        self.assertIsNone(profile.next_missing_detail())
+
+    def test_final_check_is_the_last_system_message(self):
+        """glm-style models attend to the END of the prompt, not the top: the
+        FINAL CHECK checklist must ride immediately before the visitor's
+        message, which itself stays last."""
+        captured = []
+
+        class FakeAdapter:
+            def send(self, messages, config):
+                captured.append(messages)
+                return "ok"
+
+        LLMConfig.objects.create(
+            name="Test", provider="anthropic", api_key="k",
+            model_name="claude-sonnet-4-6", system_prompt="Be helpful.", is_active=True)
+        with mock.patch("bot.engine.get_adapter", return_value=FakeAdapter()):
+            handle_inbound_message(self.conversation, "dubai 3 days please")
+
+        messages = captured[0]
+        self.assertEqual(messages[-1]["role"], "user")
+        self.assertIn("dubai 3 days please", messages[-1]["content"])
+        self.assertEqual(messages[-2]["role"], "system")
+        self.assertIn("FINAL CHECK", messages[-2]["content"])
 
     def test_engine_enqueues_extraction_task(self):
         with mock.patch("profiles.tasks.extract_profile_task") as fake_task:
@@ -419,7 +540,7 @@ class WidgetSendTests(StubbedLLMMixin, TestCase):
         self._send("hi")
         poll_body = self._poll(self._send("I need a Dubai package").content.decode())
         self.assertEqual(poll_body.count('class="msg-row bot"'), 2)
-        self.assertIn("WhatsApp number", poll_body)
+        self.assertIn("travelling", poll_body)
         poll_body = self._poll(self._send("a 5 star hotel please").content.decode())
         self.assertEqual(poll_body.count('class="msg-row bot"'), 1)
 

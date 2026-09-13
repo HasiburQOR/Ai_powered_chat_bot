@@ -120,9 +120,21 @@ def _summarize_customer(customer) -> bool:
         {
             "role": "system",
             "content": (
-                "Summarize the durable facts worth remembering about this customer "
-                "(name, preferences, order issues, commitments made, etc.) in a short "
-                "paragraph. Ignore small talk. Output only the summary."
+                "You maintain the long-term memory for a travel-agency chatbot. "
+                "The transcript lines are labelled 'Bot:' or 'Customer:'. "
+                "Summarize the DURABLE facts worth remembering about this "
+                "customer for future conversations, as a compact list with one "
+                "fact per line. Capture, when stated: destinations and trip "
+                "purpose; travel dates, trip length and flexibility; party "
+                "size (adults/children with ages); budget; package, hotel and "
+                "airline preferences; visa/residence constraints (nationality, "
+                "GCC residence card expiry); name and WhatsApp number; "
+                "commitments the bot made (prices quoted, follow-ups "
+                "promised). Prefer the customer's own wording for proper "
+                "nouns. Take facts from what the CUSTOMER said or confirmed — "
+                "never invent, never restate the bot's unanswered questions. "
+                "Ignore small talk and greetings. Output only the list, no "
+                "preamble."
             ),
         },
         {

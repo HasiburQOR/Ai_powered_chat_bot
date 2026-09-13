@@ -70,8 +70,13 @@ def _error_body(resp: requests.Response) -> str:
 
 
 class LLMAdapter:
-    def send(self, messages: list[dict], config) -> str:
-        """messages: [{"role": ..., "content": ...}, ...]. Returns assistant text."""
+    def send(self, messages: list[dict], config, temperature=None,
+             max_tokens=None, response_format=None) -> str:
+        """messages: [{"role": ..., "content": ...}, ...]. Returns assistant
+        text. The optional per-call overrides exist for structured callers
+        (profile extraction wants a cold temperature and JSON mode); when
+        omitted the config's own values apply, and providers that lack a
+        feature simply ignore it."""
         raise NotImplementedError
 
 
@@ -79,17 +84,24 @@ class OpenAICompatibleAdapter(LLMAdapter):
     """Works for OpenAI, DeepSeek, Groq, OpenRouter, Together.ai, local Ollama,
     and anything else exposing a /chat/completions endpoint in the OpenAI shape."""
 
-    def send(self, messages, config):
+    def send(self, messages, config, temperature=None, max_tokens=None,
+             response_format=None):
+        payload = {
+            "model": config.model_name,
+            "messages": messages,
+            "temperature": config.temperature if temperature is None else temperature,
+            "max_tokens": config.max_tokens if max_tokens is None else max_tokens,
+        }
+        if response_format is not None:
+            # Not every OpenAI-compatible provider implements this key — some
+            # reject it with HTTP 400, which the extraction caller turns into
+            # a plain retry without it.
+            payload["response_format"] = response_format
         try:
             resp = _session().post(
                 f"{config.api_base_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {config.api_key}"},
-                json={
-                    "model": config.model_name,
-                    "messages": messages,
-                    "temperature": config.temperature,
-                    "max_tokens": config.max_tokens,
-                },
+                json=payload,
                 timeout=TIMEOUT,
             )
         except requests.RequestException as exc:
@@ -111,7 +123,17 @@ class OpenAICompatibleAdapter(LLMAdapter):
 
 
 class AnthropicAdapter(LLMAdapter):
-    def send(self, messages, config):
+    def send(self, messages, config, temperature=None, max_tokens=None,
+             response_format=None):
+        # Anthropic has no response_format parameter; a JSON-focused
+        # instruction inside the messages serves the same purpose.
+        payload = {
+            "model": config.model_name,
+            "max_tokens": config.max_tokens if max_tokens is None else max_tokens,
+            "messages": messages,
+        }
+        if temperature is not None:
+            payload["temperature"] = temperature
         try:
             resp = _session().post(
                 "https://api.anthropic.com/v1/messages",
@@ -120,11 +142,7 @@ class AnthropicAdapter(LLMAdapter):
                     "anthropic-version": "2023-06-01",
                     "content-type": "application/json",
                 },
-                json={
-                    "model": config.model_name,
-                    "max_tokens": config.max_tokens,
-                    "messages": messages,
-                },
+                json=payload,
                 timeout=TIMEOUT,
             )
         except requests.RequestException as exc:

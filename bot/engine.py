@@ -126,9 +126,13 @@ LANGUAGE_AND_FORMAT_INSTRUCTIONS = (
     "writing in, and never fall back to English when the language is "
     "recognizable. Only if the language is truly impossible to determine, "
     "reply in simple English.\n"
-    "FORMAT: Keep every reply a short, plain-text chat message that reads well on "
-    "a phone screen. Never output Markdown (no **bold**, no ## headings, no "
-    "|tables|, no code blocks) — use short lines and dashes instead."
+    "FORMAT: Keep every reply short so it reads well on a phone screen. Put "
+    "the ONE key fact of the reply in **bold** markers — destination, date, "
+    "price, group size, name or phone number — e.g. **Baku, 12-16 Dec, 4 "
+    "adults**. When listing 2+ items (options, inclusions, next steps), give "
+    "each item its own line starting with → or -. Headings (#), tables, code "
+    "blocks and links stay forbidden: **bold**, → and - are the only "
+    "formatting you may use."
 )
 
 # Human-conversation rules sent on EVERY turn. Without them the configured
@@ -145,11 +149,14 @@ CONVERSATION_STYLE_INSTRUCTIONS = (
     "('Got it - Baku in December, 4 adults') and move the chat forward.\n"
     "2. Give before you ask: react to what they said and share one useful, "
     "concrete point (from the knowledge base or general travel sense). Only "
-    "then, if you truly need it to move forward, ask ONE short question. "
-    "Never stack several questions in one reply.\n"
-    "3. Keep replies to 1-4 short sentences, one idea per line. Use everyday "
-    "words and contractions. Vary how you open replies - never start two "
-    "replies the same way.\n"
+    "then, if a trip detail is still missing, ask ONE short follow-up "
+    "question about exactly that detail — never a random one, never one they "
+    "already answered. Never stack several questions in one reply.\n"
+    "3. LENGTH: at most 2 short sentences (~40 words) per reply, one idea "
+    "per line. You may stretch to 4 short lines ONLY when the visitor "
+    "explicitly asks for a full itinerary, package list or price breakdown. "
+    "Use everyday words and contractions. Vary how you open replies - never "
+    "start two replies the same way.\n"
     "4. Mirror their tone and energy (excited, terse, formal...). Use their "
     "name once you know it, spelled exactly as they wrote it. A single "
     "light emoji is fine only when they used one first.\n"
@@ -158,6 +165,27 @@ CONVERSATION_STYLE_INSTRUCTIONS = (
     "check with the team and confirm shortly - then keep the chat warm. If "
     "asked whether you are a bot, answer lightly and honestly in one line "
     "and get back to their trip."
+)
+
+# Sent as the LAST system message, immediately before the visitor's message,
+# on every rung of the retry ladder. glm-5.3-style models attend far more to
+# instructions next to the end of the prompt than to the opening blocks: the
+# style rules above sit at the top and were routinely ignored in production
+# (long off-point replies, re-asking details the visitor had just typed,
+# random questions). Repeating the critical rules right next to the visitor's
+# message is what actually moves behaviour.
+FINAL_CHECK_INSTRUCTIONS = (
+    "FINAL CHECK before writing the reply:\n"
+    "1. Re-read the visitor's LATEST message and the recent chat above it.\n"
+    "2. NEVER ask for a detail they already gave in this chat — confirm it "
+    "instead ('Got it - **Baku in December, 4 adults**'), even when a profile "
+    "summary claims it is still missing (the profile lags behind the chat).\n"
+    "3. Answer their actual question in at most 2 short sentences.\n"
+    "4. **Bold** the key fact.\n"
+    "5. At most ONE question — and only about the single NEXT missing trip "
+    "detail when the context below names one. No named detail, or the chat "
+    "already answered it → ask no profile question at all, and never invent "
+    "a different one."
 )
 
 # Appended as an extra system message ONLY on turns where _is_abusive() fires.
@@ -245,25 +273,32 @@ def _profile_context(customer) -> str:
     if profile is None:
         return ""
     known = "; ".join(profile.known_fields_summary())
-    missing = ", ".join(profile.missing_fields())
+    missing = profile.missing_fields()
     parts = []
     if known:
         parts.append(f"captured: {known}")
     if missing:
-        parts.append(f"still missing: {missing}")
+        parts.append(f"still missing: {', '.join(missing)}")
     if not parts:
         return ""
-    return (
+    text = (
         "Travel profile for this customer (" + "; ".join(parts) + "). "
         "IMPORTANT: this summary is written in the background and can LAG "
         "BEHIND the newest chat messages. Before asking for any detail, check "
         "the recent conversation — if the visitor already answered it there, "
         "trust the chat history and NEVER ask for the same detail again; "
-        "acknowledge the answer instead. Never ask for these details in a "
-        "first greeting and never list every question at once — once the "
-        "visitor shows interest in an actual trip, work whatever is still "
-        "missing into the conversation naturally, one or two things per reply."
+        "acknowledge the answer instead. Collect what is still missing ONE "
+        "detail per reply, as a single short follow-up question, in priority "
+        "order — never several questions at once, and never during a first "
+        "greeting."
     )
+    next_detail = profile.next_missing_detail()
+    if next_detail:
+        text += (
+            f"\nNEXT DETAIL TO ASK (the only one this turn, and only if the "
+            f"chat has not already answered it): {next_detail}."
+        )
+    return text
 
 
 def _build_context_sections(customer, chunks) -> str:
@@ -443,6 +478,13 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
             for m in recent:
                 role = "assistant" if m.sender_type == Message.SenderType.BOT else "user"
                 messages.append({"role": role, "content": m.content})
+            if recent:
+                # The final check rides immediately before the visitor's
+                # message (which stays last): trailing instructions actually
+                # steer glm-5.3 — the top-of-prompt rules alone were ignored
+                # in production.
+                messages.insert(-1, {
+                    "role": "system", "content": FINAL_CHECK_INSTRUCTIONS})
             return messages
 
         attempts = [

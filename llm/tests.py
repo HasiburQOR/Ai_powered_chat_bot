@@ -52,6 +52,27 @@ class _StubUnauthorizedHandler(BaseHTTPRequestHandler):
         pass
 
 
+class _StubCaptureHandler(BaseHTTPRequestHandler):
+    """Records the request payload on the class so tests can assert exactly
+    what the adapter sent (per-call overrides included)."""
+
+    captured = None
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        _StubCaptureHandler.captured = json.loads(self.rfile.read(length))
+        body = json.dumps(
+            {"choices": [{"message": {"content": "pong"}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
 class SessionHelperTests(SimpleTestCase):
     def test_session_helper_returns_a_real_pooled_session(self):
         """Regression for the production outage: `_session` the VARIABLE used
@@ -98,3 +119,31 @@ class OpenAICompatibleAdapterTests(SimpleTestCase):
                 self._config(server.server_port))
         self.assertIn("HTTP 401", str(ctx.exception))
         self.assertIn("Invalid API key provided", str(ctx.exception))
+
+    def test_send_overrides_reach_the_payload(self):
+        """Per-call overrides (cold temperature + JSON mode for extraction)
+        must reach the provider, not just the config defaults."""
+        server = self._start_stub(_StubCaptureHandler)
+        _StubCaptureHandler.captured = None
+        OpenAICompatibleAdapter().send(
+            [{"role": "user", "content": "ping"}],
+            self._config(server.server_port),
+            temperature=0.1,
+            response_format={"type": "json_object"},
+        )
+        payload = _StubCaptureHandler.captured
+        self.assertEqual(payload["temperature"], 0.1)
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["max_tokens"], 100)
+
+    def test_send_without_overrides_keeps_config_and_omits_response_format(self):
+        """The chat path still sends the plain 2-arg call: config values, and
+        no response_format key providers might reject."""
+        server = self._start_stub(_StubCaptureHandler)
+        _StubCaptureHandler.captured = None
+        OpenAICompatibleAdapter().send(
+            [{"role": "user", "content": "ping"}],
+            self._config(server.server_port))
+        payload = _StubCaptureHandler.captured
+        self.assertEqual(payload["temperature"], 0.7)
+        self.assertNotIn("response_format", payload)

@@ -152,7 +152,7 @@ class EngineProfileIntroTests(EngineTestMixin, TestCase):
 
         self.assertEqual(len(out), 2)  # reply + scripted questions
         joined = "\n".join(m.content for m in out)
-        self.assertIn("WhatsApp", joined)
+        self.assertIn("travelling", joined)
         profile = TravelProfile.objects.get(customer=conversation.customer)
         self.assertTrue(profile.travel_intent_detected)
         self.assertIsNotNone(profile.questions_sent_at)
@@ -225,9 +225,12 @@ class PromptAssemblyTests(EngineTestMixin, TestCase):
         self.assertEqual(
             sum(1 for m in messages
                 if m["content"] == "december, 4 adults, 2 kids"), 1)
-        # Prior turns still lead up to it.
-        self.assertEqual(messages[-2]["role"], "assistant")
-        self.assertEqual(messages[-2]["content"], "sure! when are you planning?")
+        # Prior turns still lead up to it, with the FINAL CHECK reminder
+        # riding between the last history turn and the visitor's message.
+        self.assertEqual(messages[-2]["role"], "system")
+        self.assertIn("FINAL CHECK", messages[-2]["content"])
+        self.assertEqual(messages[-3]["role"], "assistant")
+        self.assertEqual(messages[-3]["content"], "sure! when are you planning?")
 
     @patch("bot.engine.RETRY_BACKOFF_SECONDS", 0)
     @patch("bot.engine.get_adapter")
@@ -266,7 +269,7 @@ class PromptAssemblyTests(EngineTestMixin, TestCase):
             any("LATEST message" in t for t in system_texts),
             "style block must demand answering the newest message first")
         self.assertTrue(
-            any("ONE short question" in t for t in system_texts),
+            any("ONE short follow-up question" in t for t in system_texts),
             "style block must cap questions at one per reply")
         self.assertTrue(
             any(t.startswith("Today's date is") for t in system_texts),
@@ -539,7 +542,7 @@ class EngineFallbackIntroTests(EngineTestMixin, TestCase):
         self.assertEqual(mock_get_adapter.return_value.send.call_count, 3)
         self.assertEqual(len(out), 1)  # the questions — no apology bubble first
         self.assertNotIn("send your message again", out[0].content)
-        self.assertIn("WhatsApp number", out[0].content)
+        self.assertIn("travelling", out[0].content)
 
     @patch("bot.engine.RETRY_BACKOFF_SECONDS", 0)
     @patch("bot.engine.get_adapter")

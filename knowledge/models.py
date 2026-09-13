@@ -51,12 +51,9 @@ class Rule(models.Model):
 
 
 PROFILE_INTRO_MESSAGE_DEFAULT = (
-    "May I have the following information?\n"
-    "- Name and WhatsApp number?\n"
-    "- Nationality and country of residence? If you have a GCC residence card, its expiry date too.\n"
-    "- Approximate travel date?\n"
-    "- How many days package are you looking for?\n"
-    "- How many people are travelling together? For children, please share their ages."
+    "Great, I can help with that! To find you the best package:\n"
+    "- When are you planning to travel?\n"
+    "- How many people are travelling?"
 )
 
 # Canonical last-resort reply, used when the LLM could not answer even after
@@ -101,9 +98,12 @@ class BotSettings(models.Model):
     profile_intro_message = models.TextField(
         default=PROFILE_INTRO_MESSAGE_DEFAULT,
         blank=True,
-        help_text='Scripted question list, sent as a second bubble the first time a '
-                  'visitor shows travel intent (requires profile collection to be '
-                  'enabled; leave blank to rely on the AI weaving questions in).')
+        help_text='Scripted opener, sent as a second bubble the first time a '
+                  'visitor shows travel intent. Keep it to one or two '
+                  'questions — afterwards the AI collects each remaining '
+                  'detail one short follow-up at a time (requires profile '
+                  'collection to be enabled; leave blank to let the AI ask '
+                  'everything itself).')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

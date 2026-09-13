@@ -70,6 +70,21 @@ class TravelProfile(models.Model):
         ("adults", "Number of travellers"),
     ]
 
+    # The order the chatbot COLLECTS missing details in — deliberately not
+    # the REQUIRED_FIELDS display order. Contactability first (a lead without
+    # a WhatsApp number can never be followed up), then the trip-defining
+    # facts, then identity extras. Drives the "NEXT DETAIL TO ASK" directive
+    # in the engine's profile context.
+    COLLECTION_PRIORITY = [
+        ("whatsapp_number", "WhatsApp number"),
+        ("travel_date", "Travel date"),
+        ("trip_days", "Trip length (days)"),
+        ("adults", "Number of travellers"),
+        ("full_name", "Name"),
+        ("nationality", "Nationality"),
+        ("residence_country", "Country of residence"),
+    ]
+
     class Meta:
         ordering = ["-updated_at"]
 
@@ -87,6 +102,14 @@ class TravelProfile(models.Model):
     def missing_fields(self):
         return [label for name, label in self.REQUIRED_FIELDS
                 if getattr(self, name) in (None, "")]
+
+    def next_missing_detail(self):
+        """The single detail the chatbot should ask for next, in collection-
+        priority order (None when the profile is complete)."""
+        for name, label in self.COLLECTION_PRIORITY:
+            if getattr(self, name) in (None, ""):
+                return label
+        return None
 
     def known_fields_summary(self):
         """'Label: value' strings for everything captured (LLM context + card)."""
