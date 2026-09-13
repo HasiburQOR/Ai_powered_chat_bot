@@ -74,9 +74,12 @@ class TravelProfile(models.Model):
     # the REQUIRED_FIELDS display order. Contactability first (a lead without
     # a WhatsApp number can never be followed up), then the trip-defining
     # facts, then identity extras. Drives the "NEXT DETAIL TO ASK" directive
-    # in the engine's profile context.
+    # in the engine's profile context. The WhatsApp label carries the ask's
+    # full wording — it flows straight into that directive, and the LLM
+    # imitates the example format it sees.
     COLLECTION_PRIORITY = [
-        ("whatsapp_number", "WhatsApp number"),
+        ("whatsapp_number",
+         "WhatsApp number (with country code, like +971 50 123 4567)"),
         ("travel_date", "Travel date"),
         ("trip_days", "Trip length (days)"),
         ("adults", "Number of travellers"),
@@ -84,6 +87,16 @@ class TravelProfile(models.Model):
         ("nationality", "Nationality"),
         ("residence_country", "Country of residence"),
     ]
+
+    # What the engine should ask for when a stored number is not usable.
+    # Worded for the LLM so the re-ask does not collide with the profile
+    # context's "never re-ask an answered detail" lag rule: the number WITH
+    # its country code is genuinely still unanswered.
+    WHATSAPP_REASK_DETAIL = (
+        "the visitor's WhatsApp number with country code (the number they "
+        "gave is missing its country code — ask for the full number in "
+        "international format, like +880 1712 345678)"
+    )
 
     class Meta:
         ordering = ["-updated_at"]
@@ -99,15 +112,42 @@ class TravelProfile(models.Model):
             count += len([p for p in self.children_ages.replace(" ", "").split(",") if p])
         return count or None
 
+    def _whatsapp_is_usable(self) -> bool:
+        """A lead is only dialable internationally. Usable: starts with '+'
+        and carries real subscriber digits (>= 8), or was written in
+        international style without a leading 0 ('971501234567'). Not usable:
+        local format (no '+', starts with 0, like '01712345678') or a bare
+        country code ('+880') the visitor sent instead of a full number."""
+        num = (self.whatsapp_number or "").strip()
+        if not num:
+            return False
+        digits = "".join(ch for ch in num if ch.isdigit())
+        if num.startswith("+"):
+            return len(digits) >= 8
+        return not num.startswith("0")
+
     def missing_fields(self):
-        return [label for name, label in self.REQUIRED_FIELDS
-                if getattr(self, name) in (None, "")]
+        out = []
+        for name, label in self.REQUIRED_FIELDS:
+            value = getattr(self, name)
+            if value in (None, ""):
+                out.append(label)
+            elif name == "whatsapp_number" and not self._whatsapp_is_usable():
+                out.append("WhatsApp country code")
+        return out
 
     def next_missing_detail(self):
         """The single detail the chatbot should ask for next, in collection-
         priority order (None when the profile is complete)."""
         for name, label in self.COLLECTION_PRIORITY:
-            if getattr(self, name) in (None, ""):
+            value = getattr(self, name)
+            if name == "whatsapp_number":
+                if not value:
+                    return label
+                if not self._whatsapp_is_usable():
+                    return self.WHATSAPP_REASK_DETAIL
+                continue
+            if value in (None, ""):
                 return label
         return None
 

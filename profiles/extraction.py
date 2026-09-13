@@ -30,6 +30,8 @@ Rules:
 - Copy names and phone/WhatsApp numbers EXACTLY as the customer typed them —
   keep the leading "+" and country code; never rearrange, shorten or guess
   digits.
+- A bare country code alone ("+880") is NOT a WhatsApp number — record
+  whatsapp_number only when the customer also gives subscriber digits.
 - When the customer gives a total party size plus children ("12 people, 2
   children aged 5 and 8"), adults = total minus children (→ adults: 10) and
   list every child's age in children_ages.

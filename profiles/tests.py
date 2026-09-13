@@ -143,6 +143,28 @@ class ApplyFieldsTests(TestCase):
         self.assertIn("WhatsApp number", profile.missing_fields())
         self.assertIn("Travel date", profile.missing_fields())
 
+    def test_local_whatsapp_number_keeps_asking_for_country_code(self):
+        """A lead with only a local number (no '+', leading 0) or a bare
+        country code is not dialable internationally: collection continues
+        with the full international number and the profile stays incomplete.
+        An international-style number without a leading 0 ('8801712345678')
+        is accepted exactly as given."""
+        apply_fields(self.customer, {"full_name": "Ravi"})
+        self.assertIn(
+            "country code", self.customer.travel_profile.next_missing_detail())
+
+        profile = apply_fields(self.customer, {"whatsapp_number": "01712345678"})
+        self.assertIn("country code", profile.next_missing_detail())
+        self.assertIn("WhatsApp country code", profile.missing_fields())
+        self.assertFalse(profile.refresh_completion())
+
+        profile = apply_fields(self.customer, {"whatsapp_number": "+880"})
+        self.assertIn("country code", profile.next_missing_detail())
+
+        profile = apply_fields(self.customer, {"whatsapp_number": "8801712345678"})
+        self.assertNotIn("WhatsApp country code", profile.missing_fields())
+        self.assertEqual(profile.next_missing_detail(), "Travel date")
+
 
     def test_llm_failure_returns_none_for_retry(self):
         """An LLM transport failure is None (retry me), not {} (nothing
@@ -453,13 +475,46 @@ class EngineProfileIntroTests(StubbedLLMMixin, TestCase):
             m["content"] for m in captured["messages"] if m["role"] == "system")
         found = re.search(r"NEXT DETAIL TO ASK.*?: (.+?)\.", system_text)
         self.assertTrue(found, "profile context must name the next detail to ask")
-        self.assertEqual(found.group(1), "WhatsApp number")
+        self.assertEqual(
+            found.group(1),
+            "WhatsApp number (with country code, like +971 50 123 4567)")
+
+    def test_profile_context_reasks_country_code_for_local_number(self):
+        """Even with every other detail captured, a local-only WhatsApp
+        number (no '+', leading 0) must remain the NEXT DETAIL — asking for
+        the full international number — instead of the bot moving on to
+        other chatter."""
+        apply_fields(self.customer, {
+            "full_name": "Ravi", "whatsapp_number": "01712345678",
+            "nationality": "Indian", "residence_country": "India",
+            "travel_date": dt.date(2026, 12, 1), "trip_days": 7, "adults": 2,
+        })
+        captured = {}
+
+        class FakeAdapter:
+            def send(self, messages, config):
+                captured["messages"] = messages
+                return "ok"
+
+        LLMConfig.objects.create(
+            name="Test", provider="anthropic", api_key="k",
+            model_name="claude-sonnet-4-6", system_prompt="Be helpful.", is_active=True)
+        with mock.patch("bot.engine.get_adapter", return_value=FakeAdapter()):
+            handle_inbound_message(self.conversation, "so what packages do you have?")
+        system_text = " ".join(
+            m["content"] for m in captured["messages"] if m["role"] == "system")
+        self.assertIn("still missing: WhatsApp country code", system_text)
+        found = re.search(r"NEXT DETAIL TO ASK.*?: (.+?)\.", system_text)
+        self.assertTrue(found, "the re-ask must remain the next detail")
+        self.assertIn("country code", found.group(1))
 
     def test_next_missing_detail_follows_collection_priority(self):
         """WhatsApp first (contactability), then the trip-defining facts, then
         identity extras — deliberately not the REQUIRED_FIELDS order."""
         profile = apply_fields(self.customer, {"full_name": "Ravi", "nationality": "Indian"})
-        self.assertEqual(profile.next_missing_detail(), "WhatsApp number")
+        self.assertEqual(
+            profile.next_missing_detail(),
+            "WhatsApp number (with country code, like +971 50 123 4567)")
         apply_fields(self.customer, {"whatsapp_number": "+911234567890"})
         self.assertEqual(profile.next_missing_detail(), "Travel date")
         apply_fields(self.customer, {
