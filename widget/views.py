@@ -1,6 +1,7 @@
 import logging
 import re
 import uuid
+from datetime import timedelta
 
 from django.core.cache import cache
 from django.http import HttpResponse, HttpResponseForbidden
@@ -239,9 +240,21 @@ def send_message(request, session_id):
 
     _, conversation = _ensure_customer_and_conversation(channel, session_id)
 
-    # Watermark taken BEFORE enqueue: the poller hands back every bot bubble
-    # newer than this, so nothing the task produces can be missed.
-    after = timezone.now()
+    # Watermark for the poller: the LAST STORED message's exact created_at.
+    # Message.save() guarantees per-conversation created_at is strictly
+    # increasing, so anything the task writes next is strictly greater than
+    # this and the poll's created_at__gt filter can always see it. It used
+    # to be a fresh timezone.now(), but wall clocks stall for milliseconds
+    # at a time (Windows ticks every ~1-15ms): a bubble created on the same
+    # clock tick as the watermark shared its timestamp to the microsecond
+    # and was invisible to the poll forever - the visitor stared at an
+    # endless "typing..." with the reply already saved in the DB.
+    last_ts = (
+        conversation.messages.order_by('created_at')
+        .values_list('created_at', flat=True).last()
+    )
+    after = last_ts if last_ts is not None else (
+        timezone.now() - timedelta(microseconds=1))
     try:
         process_widget_message.delay(str(conversation.pk), text)
     except Exception:

@@ -1,5 +1,6 @@
 """Bot engine tests: LLM retry ladder, intent keywords (incl. Banglish),
-and profile context honesty."""
+profile context honesty, and prompt assembly (current-message-first,
+human-style rules)."""
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -187,6 +188,89 @@ class EngineProfileIntroTests(EngineTestMixin, TestCase):
             any("Banglish" in t and "ami armeniya gurte jete chai" in t
                 for t in system_texts),
             "the language instruction must teach Banglish/mixed-language handling")
+
+
+class PromptAssemblyTests(EngineTestMixin, TestCase):
+    """What the model actually receives each turn. The live glm-5.3 chat
+    showed the bot 'forgetting' whatever the visitor had just said - because
+    the newest message never reached the model at all."""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+        LLMConfig.objects.create(
+            name="Primary", provider="openai_compatible", model_name="gpt-4o-mini",
+            api_base_url=FAST_FAIL_URL, is_active=True)
+
+    @patch("bot.engine.get_adapter")
+    def test_current_message_is_the_last_llm_user_message(self, mock_get_adapter):
+        """The newest visitor message used to be filtered out of history and
+        never re-added, so the model only ever saw the PREVIOUS turn and
+        replied one message behind. It must end the prompt, exactly once."""
+        conversation = self._conversation()
+        Message.objects.create(
+            conversation=conversation,
+            sender_type=Message.SenderType.CUSTOMER, content="i want baku")
+        Message.objects.create(
+            conversation=conversation,
+            sender_type=Message.SenderType.BOT, content="sure! when are you planning?")
+        mock_get_adapter.return_value.send.return_value = "ok"
+
+        handle_inbound_message(conversation, "december, 4 adults, 2 kids")
+
+        messages = mock_get_adapter.return_value.send.call_args.args[0]
+        self.assertEqual(messages[-1]["role"], "user")
+        self.assertEqual(messages[-1]["content"], "december, 4 adults, 2 kids")
+        # Exactly once - the history copy must not duplicate it.
+        self.assertEqual(
+            sum(1 for m in messages
+                if m["content"] == "december, 4 adults, 2 kids"), 1)
+        # Prior turns still lead up to it.
+        self.assertEqual(messages[-2]["role"], "assistant")
+        self.assertEqual(messages[-2]["content"], "sure! when are you planning?")
+
+    @patch("bot.engine.RETRY_BACKOFF_SECONDS", 0)
+    @patch("bot.engine.get_adapter")
+    def test_trimmed_retry_attempts_keep_the_current_message(self, mock_get_adapter):
+        """The trimming ladder drops OLDER history, never the message the
+        visitor is actually waiting on an answer to."""
+        conversation = self._conversation()
+        for i in range(6):
+            Message.objects.create(
+                conversation=conversation,
+                sender_type=Message.SenderType.CUSTOMER, content=f"older {i}")
+        adapter = mock_get_adapter.return_value
+        adapter.send.side_effect = ["", "", "final answer"]
+
+        handle_inbound_message(conversation, "the newest question")
+
+        payloads = [call.args[0] for call in adapter.send.call_args_list]
+        self.assertEqual(len(payloads), 3)
+        for payload in payloads:
+            self.assertEqual(payload[-1]["role"], "user")
+            self.assertEqual(payload[-1]["content"], "the newest question")
+
+    @patch("bot.engine.get_adapter")
+    def test_prompt_carries_human_style_rules(self, mock_get_adapter):
+        """Replies must read like a human consultant: answer the LATEST
+        message first, confirm details instead of re-asking, at most ONE
+        question per reply - plus today's date for relative-date sense."""
+        conversation = self._conversation()
+        mock_get_adapter.return_value.send.return_value = "ok"
+
+        handle_inbound_message(conversation, "hi there")
+
+        messages = mock_get_adapter.return_value.send.call_args.args[0]
+        system_texts = [m["content"] for m in messages if m["role"] == "system"]
+        self.assertTrue(
+            any("LATEST message" in t for t in system_texts),
+            "style block must demand answering the newest message first")
+        self.assertTrue(
+            any("ONE short question" in t for t in system_texts),
+            "style block must cap questions at one per reply")
+        self.assertTrue(
+            any(t.startswith("Today's date is") for t in system_texts),
+            "the model needs today's date to interpret relative dates")
 
 
 class ProfileContextTests(EngineTestMixin, TestCase):

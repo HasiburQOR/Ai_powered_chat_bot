@@ -131,6 +131,35 @@ LANGUAGE_AND_FORMAT_INSTRUCTIONS = (
     "|tables|, no code blocks) — use short lines and dashes instead."
 )
 
+# Human-conversation rules sent on EVERY turn. Without them the configured
+# model (glm-5.3 and peers) answers like a form-filler: it re-asks details the
+# visitor just typed, fires several questions at once, and opens every reply
+# the same way. Short concrete rules beat long persona essays.
+CONVERSATION_STYLE_INSTRUCTIONS = (
+    "STYLE - talk like a real travel consultant chatting one-on-one on "
+    "WhatsApp, never like a form or a corporate bot:\n"
+    "1. Answer the visitor's LATEST message first, and prove you read it: "
+    "re-use the exact details they just gave (destination, dates, group "
+    "size, budget, name, phone number) instead of asking for them again. "
+    "If they already answered something, confirm it in a few words "
+    "('Got it - Baku in December, 4 adults') and move the chat forward.\n"
+    "2. Give before you ask: react to what they said and share one useful, "
+    "concrete point (from the knowledge base or general travel sense). Only "
+    "then, if you truly need it to move forward, ask ONE short question. "
+    "Never stack several questions in one reply.\n"
+    "3. Keep replies to 1-4 short sentences, one idea per line. Use everyday "
+    "words and contractions. Vary how you open replies - never start two "
+    "replies the same way.\n"
+    "4. Mirror their tone and energy (excited, terse, formal...). Use their "
+    "name once you know it, spelled exactly as they wrote it. A single "
+    "light emoji is fine only when they used one first.\n"
+    "5. Never invent prices, dates, visa rules or availability: use the "
+    "knowledge base and the chat. If something is not covered, say you will "
+    "check with the team and confirm shortly - then keep the chat warm. If "
+    "asked whether you are a bot, answer lightly and honestly in one line "
+    "and get back to their trip."
+)
+
 # Appended as an extra system message ONLY on turns where _is_abusive() fires.
 ABUSE_HANDLING_INSTRUCTIONS = (
     "ABUSE HANDLING: The visitor's latest message contains rude or abusive "
@@ -351,7 +380,15 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
             .order_by("-created_at")[: settings.max_context_messages + 1]
         )
         history.reverse()
-        history = [m for m in history if m.pk != inbound.pk][-settings.max_context_messages:]
+        # The CURRENT message must end the prompt as the final user message.
+        # It used to be filtered out of history and never re-added, so the
+        # model only ever saw the PREVIOUS turn: every reply answered one
+        # message behind, which read live as "the bot forgets what I just
+        # said" and made it re-ask details the visitor had just given.
+        history = (
+            [m for m in history if m.pk != inbound.pk][-settings.max_context_messages:]
+            + [inbound]
+        )
 
         try:
             chunks = list(retrieve_relevant_chunks(text, top_k=3))
@@ -379,6 +416,15 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
         base_system = [
             {"role": "system", "content": config.system_prompt if config else "You are a helpful support assistant."},
             {"role": "system", "content": LANGUAGE_AND_FORMAT_INSTRUCTIONS},
+            {"role": "system", "content": CONVERSATION_STYLE_INSTRUCTIONS},
+            # Relative dates ("next month", "eid holidays") can only be
+            # interpreted against today's date - and the model otherwise has
+            # no idea what day it is.
+            {"role": "system", "content": (
+                f"Today's date is {timezone.now():%Y-%m-%d} (%A). Use it to "
+                "interpret relative dates, but never change a date the "
+                "visitor stated explicitly."
+            )},
         ]
         if abusive:
             base_system.append({"role": "system", "content": ABUSE_HANDLING_INSTRUCTIONS})

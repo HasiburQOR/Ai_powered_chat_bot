@@ -1,7 +1,9 @@
 import uuid
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 from accounts.models import Agent
 from platforms.models import Channel
@@ -72,13 +74,33 @@ class Message(models.Model):
     content = models.TextField()
     raw_payload = models.JSONField(blank=True, null=True,
                                    help_text='Original webhook payload, for debugging (dashboard-only)')
-    created_at = models.DateTimeField(auto_now_add=True)
+    # No auto_now_add: save() stamps this itself with a per-conversation
+    # STRICTLY INCREASING guarantee (see save below).
+    created_at = models.DateTimeField(editable=False)
 
     class Meta:
         indexes = [
             models.Index(fields=['conversation', 'created_at']),
         ]
         ordering = ['created_at']
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.created_at is None:
+            # Wall clocks stall: Windows ticks only every ~1-15ms, so messages
+            # written in quick succession used to receive IDENTICAL created_at
+            # values. Anything filtering created_at > watermark then lost
+            # bubbles forever - the widget poller showed an endless
+            # "typing..." because the reply shared the watermark's timestamp
+            # to the microsecond. Nudge each new message 1us past the
+            # conversation's latest instead of trusting the clock.
+            latest = Message.objects.filter(
+                conversation_id=self.conversation_id
+            ).aggregate(latest=models.Max('created_at'))['latest']
+            now = timezone.now()
+            if latest is not None and latest >= now:
+                now = latest + timedelta(microseconds=1)
+            self.created_at = now
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.get_sender_type_display()}: {self.content[:50]}'

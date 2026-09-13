@@ -1,6 +1,7 @@
 import html
 import re
 from unittest.mock import patch
+from urllib.parse import unquote
 
 from django.core.cache import cache
 from django.test import Client, TestCase
@@ -118,6 +119,30 @@ class WidgetChatOpenTests(StubbedLLMMixin, TestCase):
             self._poll_url(resp.content.decode())).content.decode()
         self.assertEqual(poll_body.count('class="msg-row bot"'), 1)
         self.assertNotIn("WhatsApp number", poll_body)
+
+    def test_poller_watermark_is_last_message_timestamp(self):
+        """The watermark must be the LAST STORED message's created_at, not a
+        fresh timezone.now(): on stalled clocks (Windows ticks every ~1-15ms)
+        a now()-watermark can equal the incoming bubbles' timestamps, and the
+        poll's strict created_at__gt filter never returns them."""
+        self._visit()
+        self.client.post(
+            reverse("widget-send", args=[self._session_id()]),
+            {"site_key": "sk-test", "message": "hello"},
+        )
+        last = Message.objects.order_by("created_at").last()
+        self.assertIsNotNone(last)
+
+        resp = self.client.post(
+            reverse("widget-send", args=[self._session_id()]),
+            {"site_key": "sk-test", "message": "another one"},
+        )
+        url = self._poll_url(resp.content.decode())
+        # The template percent-encodes the timestamp inside the hx-get URL
+        # (':' -> %3A, '+' -> %2B); the poll view decodes it back via
+        # request.GET, so compare after unquoting.
+        self.assertIn(
+            f"after={last.created_at.isoformat()}", unquote(url))
 
     def test_send_message_fragment_has_no_visitor_bubble(self):
         """Optimistic UI: chat.html adds the visitor's bubble client-side the
