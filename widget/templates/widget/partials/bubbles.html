@@ -8,7 +8,7 @@ multiple lines in Django templates — it leaks as literal text into the page
 {% endcomment %}
 {% if pair %}
   {% for reply in replies %}
-    <div class="msg-row bot"><div class="bubble bot">{{ reply.content }}</div></div>
+    <div class="msg-row bot" data-mid="{{ reply.id }}"><div class="bubble bot">{{ reply.content }}</div></div>
   {% endfor %}
 {% else %}
   <div class="msg-row bot"><div class="bubble error">{{ error }}</div></div>

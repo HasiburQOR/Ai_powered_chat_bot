@@ -141,6 +141,33 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
+# Kill runaway tasks: a wedged LLM call must never pin a worker thread forever.
+# (Soft limit raises SoftTimeLimitExceeded inside the task; hard SIGKILLs it.)
+CELERY_TASK_SOFT_TIME_LIMIT = 150
+CELERY_TASK_TIME_LIMIT = 180
+# Fair dispatch under concurrency: workers claim a new message only when free,
+# instead of prefetching a queue that then sits on one busy worker.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+
+# ---- Cache (Redis) ----
+# Shared cache for widget rate limiting, the BotSettings row and other hot
+# reads. All cache consumers in this codebase treat failures as non-fatal
+# (they fall back to the DB path), so a Redis blip degrades instead of breaking.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': REDIS_URL,
+    }
+}
+
+# ---- Celery Beat ----
+CELERY_BEAT_SCHEDULE = {
+    'summarize-idle-customers': {
+        'task': 'bot.tasks.summarize_idle_customers',
+        'schedule': 600.0,  # every 10 minutes
+    },
+}
+
 # Field Encryption
 FIELD_ENCRYPTION_KEY = os.environ.get('FIELD_ENCRYPTION_KEY', 'V3pLV1RvbFFuSmZ5WE95SGpldWVTVW15QWNjSlk3b0M=')
 

@@ -59,14 +59,14 @@
       }
     });
 
-    // --- Optimistic send --------------------------------------------------
-    // The bot engine (rules → retrieval → LLM) runs synchronously, so the
-    // /send/ round-trip can take seconds. Don't make the visitor stare at a
-    // frozen input: the moment they submit, append their bubble + a typing
-    // indicator and clear the input; swap the dots for the bot reply when the
-    // fragment arrives. The /send/ fragment carries ONLY the bot reply
-    // (bubbles.html), so the optimistically-added visitor bubble is never
-    // duplicated.
+    // --- Optimistic send + async reply -------------------------------------
+    // /send/ only ENQUEUES the bot engine (Celery) and answers in milliseconds
+    // with a self-polling "typing…" fragment, so a burst of visitors can never
+    // exhaust the web workers. The visitor's bubble is still appended
+    // optimistically at submit; the typing dots come from the server fragment,
+    // and the poller swaps itself out for the bot reply when it lands
+    // (bubbles.html). If Celery is down, /send/ falls back to the old
+    // synchronous reply fragment — the UI looks identical either way.
     function scrollLog() {
       var log = document.getElementById('chat-log');
       if (log) { log.scrollTop = log.scrollHeight; }
@@ -87,21 +87,10 @@
       mine.className = 'msg-row visitor';
       mine.innerHTML = '<div class="bubble visitor" style="background: var(--theme, #4f46e5)"></div>';
       mine.firstChild.textContent = text;  // textContent — user text is never parsed as HTML
-      var dots = document.createElement('div');
-      dots.id = 'typing-msg';
-      dots.className = 'msg-row bot';
-      dots.innerHTML = '<div class="bubble bot typing"><span></span><span></span><span></span></div>';
       log.appendChild(mine);
-      log.appendChild(dots);
       input.value = '';
       autosizeChatInput(input);
       scrollLog();
-    });
-
-    // Response arrived — drop the dots just before the reply fragment appends.
-    document.body.addEventListener('htmx:beforeSwap', function () {
-      var dots = byId('typing-msg');
-      if (dots) { dots.remove(); }
     });
 
     document.body.addEventListener('htmx:afterRequest', function (e) {
@@ -117,13 +106,22 @@
           // visitor's text back so they can retry without retyping.
           var mine = byId('optimistic-msg');
           if (mine) { mine.remove(); }
-          var dots = byId('typing-msg');
-          if (dots) { dots.remove(); }
           var input = form.querySelector('[name="message"]');
           if (input && !input.value && form._pendingText) { input.value = form._pendingText; }
           delete form._pendingText;
           autosizeChatInput(input);
         }
+      }
+      // Replies now arrive via the async pipeline (send → poller → poll), so
+      // two overlapping pollers can briefly fetch the same bubble. De-duplicate
+      // by message id, keeping the first copy.
+      var log = byId('chat-log');
+      if (log) {
+        var seen = {};
+        log.querySelectorAll('.msg-row.bot[data-mid]').forEach(function (row) {
+          var mid = row.getAttribute('data-mid');
+          if (seen[mid]) { row.remove(); } else { seen[mid] = true; }
+        });
       }
       scrollLog();
     });

@@ -59,13 +59,33 @@ PROFILE_INTRO_MESSAGE_DEFAULT = (
     "- How many people are travelling together? For children, please share their ages."
 )
 
+# Canonical last-resort reply, used when the LLM could not answer even after
+# retries. Deliberately NEVER worded like the old "I'm not sure about that —
+# let me get a team member to help.": that reads as the bot being oblivious,
+# and a travel lead who hears "I don't know" simply leaves. The default keeps
+# the conversation moving and asks for trip details so the exchange stays
+# salvageable for a human follow-up.
+FALLBACK_MESSAGE_DEFAULT = (
+    "Sorry, I couldn't process that just now — please send your message again. "
+    "Meanwhile, tell me your destination, travel dates and number of travellers, "
+    "and I'll get the details ready for you."
+)
+
+# Cache key under which engine._settings() keeps this singleton (~30s TTL);
+# save() deletes it so dashboard edits apply to the very next message.
+BOT_SETTINGS_CACHE_KEY = "bot:settings"
+
 
 class BotSettings(models.Model):
     """Singleton holding global bot behavior not tied to a specific provider."""
 
     fallback_message = models.TextField(
-        help_text='Sent when the bot has low/no confidence, '
-                  'e.g. "I\'m not sure about that — let me get a team member to help."'
+        help_text='Sent only when the LLM could not answer even after retries '
+                  '(provider outage, timeout...). Never word it as "I\'m not '
+                  'sure / let me get a team member" — that reads as the bot '
+                  'being oblivious and kills travel leads. Leave the default; '
+                  'it invites the visitor to re-send and keeps gathering trip '
+                  'details.'
     )
     max_context_messages = models.PositiveIntegerField(
         default=10, help_text='How many recent messages count as short-term memory')
@@ -90,12 +110,19 @@ class BotSettings(models.Model):
     def save(self, *args, **kwargs):
         self.pk = 1  # Enforce singleton
         super().save(*args, **kwargs)
+        # engine._settings() caches this row for ~30s; a dashboard save must
+        # apply to the very next visitor message, not 30s later.
+        try:
+            from django.core.cache import cache
+            cache.delete(BOT_SETTINGS_CACHE_KEY)
+        except Exception:
+            pass
 
     @classmethod
     def load(cls):
         obj, _ = cls.objects.get_or_create(
             pk=1,
-            defaults={"fallback_message": "I'm not sure about that — let me get a team member to help."},
+            defaults={"fallback_message": FALLBACK_MESSAGE_DEFAULT},
         )
         return obj
 

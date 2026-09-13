@@ -41,11 +41,14 @@ Renders the full chat UI (HTMX-powered) inside the iframe.
 - Create or resume a `Customer`/`Conversation` keyed by a session ID (cookie, scoped to our own domain since we're inside an iframe — third-party cookie restrictions don't apply here because the iframe *is* the first party from its own perspective).
 
 ### `POST /widget/chat/<session_id>/send/`
-HTMX endpoint — form-encoded `message` field.
-1. Save the inbound `Message`.
-2. Run the bot engine (rules → retrieval → LLM) — can run synchronously here since there's no external retry policy to protect against, just keep the LLM call timeout sane (e.g. 20–30s). Round-trip latency is masked client-side: the widget appends the visitor's bubble + a typing indicator the instant they submit (optimistic UI, see step 4).
-3. Save the outbound `Message`.
-4. Return an HTML fragment with **only the bot reply bubble** (or an error bubble, e.g. rate limit) — the visitor's own bubble was already added client-side at submit, so echoing it back would duplicate it. HTMX swaps it in with `hx-swap="beforeend"` on the message list container.
+HTMX endpoint — form-encoded `message` field. **Asynchronous (Option B):**
+1. Resolve/create `Customer` + `Conversation` (as on page view).
+2. Enqueue the bot engine (rules → retrieval → LLM) as the `process_widget_message` Celery task — the HTTP worker is free in milliseconds, so a burst of concurrent visitors can never exhaust gunicorn's sync workers. Snapshot `after = now()` BEFORE enqueueing.
+3. Return a self-polling "typing…" fragment (`widget/partials/typing_poll.html`): dots + `hx-get` on `GET /widget/chat/<session_id>/poll/?site_key=...&after=<after>` with `hx-trigger="every 1.5s"` and `hx-swap="outerHTML"`.
+4. While the task is still running, `/poll/` returns the SAME poller fragment (re-arming HTMX's `every` trigger). When done, `/poll/` returns the bot bubble fragment(s), which replace the poller via `outerHTML` — removing its `hx-get`, so polling stops by construction. `after` is the watermark that guarantees no bubble is missed or double-delivered (the client additionally de-duplicates by message id).
+5. Fallback: if enqueueing fails (Redis/Celery down), run the engine INLINE and return the bubbles directly — a broker outage degrades latency, never drops a message.
+
+Rate limiting: `POST /send/` (20/min/session) and `/poll/` (60/min/session, 204 when exceeded) both fail OPEN when the cache backend is unavailable.
 
 ## 3. Dashboard (internal, staff-only, HTMX CRUD)
 

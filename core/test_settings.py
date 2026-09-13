@@ -25,3 +25,17 @@ MIGRATION_MODULES = {
 
 # Faster (and sufficient for the test suite).
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+
+# Run Celery tasks INLINE so tests exercise the full widget/webhook cycle
+# (send → engine → bubbles) without a Redis broker: widget /send/ returns the
+# typing-poller fragment and the bubbles are already in the DB for the poll.
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_EAGER_PROPAGATES = True
+
+# Predictable per-test-process cache (rate-limit counters, BotSettings cache).
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "test-cache",
+    }
+}

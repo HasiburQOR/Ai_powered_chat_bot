@@ -15,32 +15,50 @@ Returns EVERY outbound Message produced this turn (a list), so callers — the
 widget fragment and the platform webhook — deliver all of them.
 """
 import logging
+import os
 import re
+import time
 
 from django.utils import timezone
 
 from conversations.models import Conversation, Message
-from knowledge.models import BotSettings
+from knowledge.models import (
+    BOT_SETTINGS_CACHE_KEY,
+    BotSettings,
+    FALLBACK_MESSAGE_DEFAULT,
+)
 from knowledge.retrieval import match_rule, retrieve_relevant_chunks
-from llm.adapters import get_adapter
+from llm.adapters import LLMEmptyResponseError, get_adapter
 from llm.models import LLMConfig
 from profiles.models import ProfileNumberCounter, TravelProfile
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_DEFAULT = "I'm not sure about that — let me get a team member to help."
+# Never worded as "I'm not sure / let me get a team member" — that reads as the
+# bot being oblivious and kills travel leads. The canonical text lives in
+# knowledge.models so the seeded BotSettings row and this constant cannot drift.
+FALLBACK_DEFAULT = FALLBACK_MESSAGE_DEFAULT
+
+# Backoff before LLM retry attempts (1s before attempt 2, 2s before attempt 3).
+RETRY_BACKOFF_SECONDS = float(os.environ.get("LLM_RETRY_BACKOFF_SECONDS", "1"))
 
 # Substrings (case-insensitive) that signal the visitor is asking about an
 # actual trip — the moment they do, the scripted profile questions go out.
-# English-only by design (cheap + synchronous); the LLM extractor's
-# travel_intent flag is the language-agnostic backstop for anything missed.
+# Cheap + synchronous; the LLM extractor's travel_intent flag is the
+# language-agnostic backstop for anything missed here.
 TRAVEL_INTENT_KEYWORDS = (
     "trip", "travel", "tour", "package", "visa", "holiday", "vacation",
     "honeymoon", "itinerary", "flight", "hotel", "resort", "book", "booking",
     "reservation", "price", "cost", "dubai", "abu dhabi", "baku", "istanbul",
     "antalya", "maldives", "bali", "thailand", "malaysia", "singapore",
-    "georgia", "armenia", "armania", "azerbaijan", "sri lanka", "egypt", "qatar",
-    "saudi", "umrah", "umra", "hajj",
+    "georgia", "armenia", "armania", "armeniya", "azerbaijan", "sri lanka",
+    "egypt", "qatar", "saudi", "umrah", "umra", "hajj",
+    # Romanized Bangla ("Banglish") and Hindi — most visitors from these
+    # markets type their language in Latin letters ("ami armeniya gurte jete
+    # chai for 5 days" = "I want to go to Armenia for 5 days"). Without these,
+    # intent was missed and the profile questions never went out.
+    "ghurte", "ghurbo", "jete chai", "jabo", "jaben", "ghumne", "safar",
+    "yatra", "bhraman",
 )
 
 
@@ -50,10 +68,10 @@ def _travel_intent(text: str) -> bool:
 
 # --- Abuse handling ---------------------------------------------------------
 # A message like "fuck you" can make the provider refuse (or the model stall),
-# which used to surface the generic "I'm not sure about that — let me get a
-# team member to help." fallback and read as the bot being oblivious. Abusive
-# turns instead coach the LLM to de-escalate, and get a calm built-in reply
-# whenever the LLM still cannot answer.
+# which used to surface the generic "I'm not sure about that" fallback and read
+# as the bot being oblivious. Abusive turns instead coach the LLM to
+# de-escalate, and get a calm built-in reply whenever the LLM still cannot
+# answer.
 _ABUSIVE_STEMS = (
     # Matched at the START of a word, suffixes allowed: fuck/fucking/fucked,
     # shit/shithead, bitch/bitches ... (the (?<!\w) guard keeps "cunt" out of
@@ -96,10 +114,17 @@ def _is_abusive(text: str) -> bool:
 # Applies to every LLM turn regardless of the configured system prompt: the bot
 # must mirror the visitor's language and keep replies chat-friendly plain text.
 LANGUAGE_AND_FORMAT_INSTRUCTIONS = (
-    "LANGUAGE: The customer may write in any language. Always reply in the same "
-    "language and script the customer used in their latest message — Hindi (in "
-    "Latin or Devanagari script) gets a Hindi reply, Arabic gets Arabic, Georgian "
-    "gets Georgian, and so on. Only if you truly cannot determine the language, "
+    "LANGUAGE: The customer may write in any language, script, or a mix of "
+    "languages inside one sentence — for example romanized Bangla/Banglish like "
+    "'ami armeniya gurte jete chai for 5 days', Hinglish, or Arabizi. Detect the "
+    "language of their latest message — even when it is typed in Latin letters — "
+    "and reply in that SAME language: Banglish gets Bangla (Bengali script), "
+    "Hinglish gets Hindi, Arabic gets Arabic, Georgian gets Georgian, and so on. "
+    "Read the INTENT out of mixed-language text: the Banglish example above "
+    "means the customer wants a 5-day Armenia trip — answer that directly. "
+    "Never reply that you did not understand, never ask which language they are "
+    "writing in, and never fall back to English when the language is "
+    "recognizable. Only if the language is truly impossible to determine, "
     "reply in simple English.\n"
     "FORMAT: Keep every reply a short, plain-text chat message that reads well on "
     "a phone screen. Never output Markdown (no **bold**, no ## headings, no "
@@ -127,7 +152,23 @@ ABUSIVE_FALLBACK_DEFAULT = (
 
 
 def _settings() -> BotSettings:
-    return BotSettings.load()
+    """Singleton settings, cached briefly — every message used to pay a DB
+    round-trip just for this one row. BotSettings.save() deletes the cache
+    key, so dashboard edits apply to the very next message, not 30s later."""
+    try:
+        from django.core.cache import cache
+        cached = cache.get(BOT_SETTINGS_CACHE_KEY)
+        if cached is not None:
+            return cached
+    except Exception:
+        pass  # Cache backend hiccup must never break a reply.
+    obj = BotSettings.load()
+    try:
+        from django.core.cache import cache
+        cache.set(BOT_SETTINGS_CACHE_KEY, obj, 30)
+    except Exception:
+        pass
+    return obj
 
 
 def _profile_context(customer) -> str:
@@ -261,45 +302,91 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
         except Exception:
             chunks = []
 
-        # Assemble prompt.
+        # 4. Call the LLM with a trimming retry ladder. Retrying the identical
+        # payload used to be guaranteed to fail the same way (same oversized
+        # context, same timeout), and the hard-coded 30s provider timeout made
+        # slow reasoning models fail at all. Each attempt now gets a leaner
+        # prompt and a fresh budget:
+        #   1. full prompt: RAG excerpts + rule + profile + full history
+        #   2. no RAG excerpts, last 5 messages   (+ ~1s backoff)
+        #   3. minimal prompt, last 4 messages    (+ ~2s backoff)
+        # Only if all three fail does the warm fallback go out.
         config = LLMConfig.objects.filter(is_active=True).first()
-        messages = [
+        if config is None:
+            logger.error(
+                "No LLMConfig with is_active=True — falling back for "
+                "conversation %s (fallback_reason=config_missing). Create or "
+                "activate a provider in the dashboard.",
+                conversation.pk,
+            )
+
+        base_system = [
             {"role": "system", "content": config.system_prompt if config else "You are a helpful support assistant."},
             {"role": "system", "content": LANGUAGE_AND_FORMAT_INSTRUCTIONS},
         ]
         if abusive:
-            messages.append({"role": "system", "content": ABUSE_HANDLING_INSTRUCTIONS})
-        context = _build_context_sections(conversation.customer, chunks)
-        if rule and not rule.short_circuits_llm:
-            context += f"\n\nApplicable rule ({rule.name}): {rule.response_text}"
-        if context:
-            messages.append({"role": "system", "content": context})
-        for m in history:
-            role = "assistant" if m.sender_type == Message.SenderType.BOT else "user"
-            messages.append({"role": role, "content": m.content})
+            base_system.append({"role": "system", "content": ABUSE_HANDLING_INSTRUCTIONS})
 
-        # 4. Call the LLM. One retry: provider hiccups (timeouts, rate limits)
-        # used to drop straight to the fallback mid-conversation, which read as
-        # the bot ignoring everything the visitor had just said.
+        def _context(with_chunks: bool) -> str:
+            context = _build_context_sections(
+                conversation.customer, chunks if with_chunks else [])
+            if rule and not rule.short_circuits_llm:
+                context += f"\n\nApplicable rule ({rule.name}): {rule.response_text}"
+            return context
+
+        def _to_chat_messages(context: str, recent) -> list:
+            messages = list(base_system)
+            if context:
+                messages.append({"role": "system", "content": context})
+            for m in recent:
+                role = "assistant" if m.sender_type == Message.SenderType.BOT else "user"
+                messages.append({"role": role, "content": m.content})
+            return messages
+
+        attempts = [
+            _to_chat_messages(_context(True), history),
+            _to_chat_messages(_context(False), history[-5:]),
+            _to_chat_messages("", history[-4:]),
+        ]
+
         reply_text = None
+        last_error = None
         if config is not None:
-            for attempt in (1, 2):
+            for attempt_number, attempt_messages in enumerate(attempts, start=1):
+                if attempt_number > 1:
+                    logger.warning(
+                        "Retrying LLM call for conversation %s with trimmed "
+                        "context (attempt %d/%d) — previous attempt failed: "
+                        "%s: %s",
+                        conversation.pk, attempt_number, len(attempts),
+                        type(last_error).__name__, str(last_error)[:500],
+                    )
+                    time.sleep(RETRY_BACKOFF_SECONDS * (attempt_number - 1))
                 try:
-                    reply_text = get_adapter(config).send(messages, config)
+                    reply_text = get_adapter(config).send(attempt_messages, config)
                     break
                 except Exception as exc:
-                    logger.error(
-                        "LLM call failed (attempt %d/2) for conversation %s "
-                        "(provider=%s model=%s): %s: %s",
-                        attempt, conversation.pk, config.provider,
-                        config.model_name, type(exc).__name__, str(exc)[:500],
-                    )
-                    reply_text = None
+                    last_error = exc
+
         if not reply_text:
+            if config is not None:
+                fallback_reason = (
+                    "empty_response"
+                    if isinstance(last_error, LLMEmptyResponseError)
+                    else "provider_error"
+                )
+                logger.error(
+                    "LLM failed after %d attempts for conversation %s — sending "
+                    "the fallback message (fallback_reason=%s provider=%s "
+                    "model=%s last_error=%s: %s)",
+                    len(attempts), conversation.pk, fallback_reason,
+                    config.provider, config.model_name,
+                    type(last_error).__name__, str(last_error)[:500],
+                )
             if abusive:
                 reply_text = ABUSIVE_FALLBACK_DEFAULT
             else:
-                reply_text = settings.fallback_message or FALLBACK_DEFAULT
+                reply_text = (settings.fallback_message or "").strip() or FALLBACK_DEFAULT
 
         outbounds.append(Message.objects.create(
             conversation=conversation,
@@ -307,8 +394,13 @@ def handle_inbound_message(conversation: Conversation, text: str, raw_payload=No
             content=reply_text,
         ))
 
-        # 5. Memory summarization trigger.
-        message_count = Message.objects.filter(conversation=conversation).count()
+        # 5. Memory summarization trigger — counts CUSTOMER messages only, so
+        # every bot bubble (replies, the scripted questions, error bubbles)
+        # does not make the threshold fire twice as often as intended.
+        message_count = Message.objects.filter(
+            conversation=conversation,
+            sender_type=Message.SenderType.CUSTOMER,
+        ).count()
         trigger = settings.memory_summary_trigger_count or 20
         if message_count % trigger == 0:
             from bot.tasks import summarize_customer_memory

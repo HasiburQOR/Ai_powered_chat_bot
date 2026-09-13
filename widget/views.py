@@ -1,3 +1,4 @@
+import logging
 import re
 import uuid
 
@@ -6,16 +7,24 @@ from django.http import HttpResponse, HttpResponseForbidden
 from django.shortcuts import render
 from django.templatetags.static import static
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.clickjacking import xframe_options_exempt
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET
 
 from bot.engine import handle_inbound_message
+from bot.tasks import WIDGET_ERROR_TEXT, process_widget_message
 from conversations.models import Conversation, Customer, Message
 from platforms.models import Channel
+
+logger = logging.getLogger(__name__)
 
 # Phase 10 hardening: basic per-session throttle on the send endpoint.
 RATE_LIMIT_MESSAGES = 20
 RATE_LIMIT_SECONDS = 60
+# Polling is cheap but chatty (every 1.5s per open widget); a generous
+# per-session ceiling still stops a broken/looping client from hammering us.
+RATE_LIMIT_POLLS = 60
 
 
 def _get_wordpress_channel(site_key):
@@ -170,21 +179,42 @@ def _chat_panel_context(channel, conversation, session_id, site_key) -> dict:
 
 
 def _rate_limited(session_id) -> bool:
-    key = f"widget_rl:{session_id}"
-    count = cache.get(key, 0)
-    if count >= RATE_LIMIT_MESSAGES:
-        return True
-    cache.set(key, count + 1, RATE_LIMIT_SECONDS)
+    """Per-session send throttle. Fails OPEN: if the cache backend is down we
+    never block a lead over rate limiting."""
+    try:
+        key = f"widget_rl:{session_id}"
+        count = cache.get(key, 0)
+        if count >= RATE_LIMIT_MESSAGES:
+            return True
+        cache.set(key, count + 1, RATE_LIMIT_SECONDS)
+    except Exception:
+        pass
+    return False
+
+
+def _poll_rate_limited(session_id) -> bool:
+    """Softer throttle for the 1.5s poller; same fail-open policy."""
+    try:
+        key = f"widget_poll_rl:{session_id}"
+        count = cache.get(key, 0)
+        if count >= RATE_LIMIT_POLLS:
+            return True
+        cache.set(key, count + 1, RATE_LIMIT_SECONDS)
+    except Exception:
+        pass
     return False
 
 
 @csrf_exempt
 @xframe_options_exempt
 def send_message(request, session_id):
-    """HTMX endpoint — form-encoded `message`. Runs the bot engine synchronously
-    and returns an HTML fragment with the bot's reply bubble (hx-swap='beforeend').
+    """HTMX endpoint — form-encoded `message`. Enqueues the bot engine as a
+    Celery task and answers in milliseconds with a self-polling "typing…"
+    fragment, so gunicorn's sync workers are never held for a whole LLM
+    round-trip. If Celery/Redis is unreachable, falls back to running the
+    engine inline (the old behaviour) rather than dropping the message.
     The visitor's own bubble is added client-side at submit (optimistic UI), so
-    it must NOT be part of this fragment."""
+    it must NOT be part of any returned fragment."""
     if request.method != "POST":
         return HttpResponseForbidden("POST only")
 
@@ -209,14 +239,81 @@ def send_message(request, session_id):
 
     _, conversation = _ensure_customer_and_conversation(channel, session_id)
 
+    # Watermark taken BEFORE enqueue: the poller hands back every bot bubble
+    # newer than this, so nothing the task produces can be missed.
+    after = timezone.now()
     try:
-        replies = handle_inbound_message(conversation, text)
+        process_widget_message.delay(str(conversation.pk), text)
     except Exception:
-        replies = [Message.objects.create(
-            conversation=conversation,
-            sender_type=Message.SenderType.BOT,
-            content="Sorry, something went wrong on our side. Please try again in a moment.",
-        )]
+        logger.warning("Could not enqueue widget message — running inline", exc_info=True)
+        try:
+            replies = handle_inbound_message(conversation, text)
+        except Exception:
+            logger.exception("Inline widget processing failed for conversation %s", conversation.pk)
+            replies = [Message.objects.create(
+                conversation=conversation,
+                sender_type=Message.SenderType.BOT,
+                content=WIDGET_ERROR_TEXT,
+            )]
+        return render(request, "widget/partials/bubbles.html", {
+            "pair": True,
+            "replies": replies,
+        })
+
+    return render(request, "widget/partials/typing_poll.html", {
+        "session_id": session_id,
+        "site_key": site_key,
+        "after": after.isoformat(),
+    })
+
+
+@csrf_exempt
+@xframe_options_exempt
+@require_GET
+def poll_messages(request, session_id):
+    """Poll target for the widget's typing fragment. Returns bot bubbles newer
+    than `after` (ISO datetime stamped at send time); while there are none, it
+    re-arms the SAME poller so HTMX keeps checking every ~1.5s. When bubbles
+    arrive they replace the poller via hx-swap="outerHTML", which also removes
+    its hx-get — polling stops by construction."""
+    session_id = _clean_session_id(session_id)
+    if not session_id:
+        return HttpResponseForbidden("Invalid session.")
+
+    site_key = request.GET.get("site_key", "")
+    channel = _get_wordpress_channel(site_key)
+    if channel is None:
+        return HttpResponseForbidden("Unknown or inactive site key.")
+
+    after = parse_datetime(request.GET.get("after") or "")
+    if after is None:
+        return HttpResponseForbidden("Invalid `after` timestamp.")
+    if timezone.is_naive(after):
+        after = timezone.make_aware(after)
+
+    if _poll_rate_limited(session_id):
+        # 204 = htmx performs no swap, the poller element survives untouched
+        # and simply fires again on the next interval.
+        return HttpResponse(status=204)
+
+    conversation = (
+        Conversation.objects
+        .filter(customer__channel=channel, customer__external_id=session_id)
+        .order_by("-last_message_at")
+        .first()
+    )
+    replies = [] if conversation is None else list(
+        conversation.messages
+        .filter(sender_type=Message.SenderType.BOT, created_at__gt=after)
+        .order_by("created_at")
+    )
+    if not replies:
+        # Still generating — same poller, same watermark, next tick.
+        return render(request, "widget/partials/typing_poll.html", {
+            "session_id": session_id,
+            "site_key": site_key,
+            "after": after.isoformat(),
+        })
 
     return render(request, "widget/partials/bubbles.html", {
         "pair": True,

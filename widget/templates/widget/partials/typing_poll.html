@@ -1,0 +1,17 @@
+{% comment %}
+Self-polling "typing…" indicator returned by /send/ (and re-returned by /poll/
+while the reply is still generating). hx-get fires every 1.5s; when bot bubbles
+exist, /poll/ returns them and they replace this element via
+hx-swap="outerHTML" — which also removes its hx-get, so polling stops by
+construction. `after` is the send-time watermark that guarantees no bot bubble
+is missed or double-delivered. NOTE: a `{# #}` comment cannot span multiple
+lines in Django templates — it leaks as literal text into the page — so
+multi-line notes use this tag instead.
+{% endcomment %}
+<div class="msg-row bot widget-poll"
+     hx-get="{% url 'widget-poll' session_id %}?site_key={{ site_key|urlencode }}&amp;after={{ after|urlencode }}"
+     hx-trigger="every 1.5s"
+     hx-target="this"
+     hx-swap="outerHTML">
+  <div class="bubble bot typing"><span></span><span></span><span></span></div>
+</div>

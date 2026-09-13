@@ -58,7 +58,7 @@ services:
   worker:
     build: .
     image: chatbot_app:latest
-    command: celery -A core worker -l info --concurrency=2
+    command: celery -A core worker -l info --pool=threads --concurrency=10
     env_file: .env
     environment:
       POSTGRES_HOST: db

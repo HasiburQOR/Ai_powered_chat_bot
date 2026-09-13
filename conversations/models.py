@@ -17,6 +17,10 @@ class Customer(models.Model):
     email = models.EmailField(blank=True, help_text='Optional; shared by the visitor during chat or entered manually')
     phone = models.CharField(max_length=50, blank=True, help_text='Optional; shared by the visitor during chat or entered manually')
     memory_summary = models.TextField(blank=True, help_text='Regenerated periodically by Celery task')
+    memory_summary_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='When memory_summary was last regenerated; lets the idle-summarizer '
+                  'beat task skip customers whose summary is already current')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
