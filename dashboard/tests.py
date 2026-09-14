@@ -1,4 +1,5 @@
 import csv
+import datetime as dt
 from io import StringIO
 
 from django.contrib.auth import get_user_model
@@ -302,7 +303,7 @@ class VisitorProfileFilterTests(TestCase):
         karim = Customer.objects.create(
             channel=cls.wp, external_id="wp-v1", display_name="Website visitor",
         )
-        TravelProfile.objects.create(
+        cls.profile = TravelProfile.objects.create(
             customer=karim, full_name="Karim Ahmed",
             whatsapp_number="+8801712345678", nationality="Bangladeshi",
         )
@@ -311,7 +312,7 @@ class VisitorProfileFilterTests(TestCase):
         stranger = Customer.objects.create(
             channel=cls.wp, external_id="wp-v2", display_name="Website visitor",
         )
-        Conversation.objects.create(customer=stranger, last_message_at=timezone.now())
+        cls.stranger_conversation = Conversation.objects.create(customer=stranger, last_message_at=timezone.now())
 
     def setUp(self):
         self.client.force_login(self.staff)
@@ -342,13 +343,13 @@ class VisitorProfileFilterTests(TestCase):
         self.assertContains(resp, "of 2 conversations")
         self.assertContains(resp, "Karim Ahmed")      # extracted name beats the generic label
         self.assertContains(resp, "Website visitor")  # stranger without a profile keeps it
-        self.assertEqual(resp.content.decode().count('onchange="this.form.submit()"'), 3)
+        self.assertEqual(resp.content.decode().count('onchange="this.form.submit()"'), 5)  # 3 dropdowns + 2 date inputs
         self.assertContains(resp, f'action="{reverse("dashboard-conversations")}"')
 
     def test_profile_list_counter_and_autosubmit(self):
         resp = self.client.get(reverse("dashboard-profiles"))
         self.assertContains(resp, "of 1 profile")
-        self.assertEqual(resp.content.decode().count('onchange="this.form.submit()"'), 2)
+        self.assertEqual(resp.content.decode().count('onchange="this.form.submit()"'), 4)  # 2 dropdowns + 2 date inputs
         self.assertContains(resp, f'action="{reverse("dashboard-profiles")}"')
 
     def test_clear_filters_link_only_appears_when_filtering(self):
@@ -356,5 +357,41 @@ class VisitorProfileFilterTests(TestCase):
         self.assertNotContains(resp, "Clear filters")
         resp = self.client.get(reverse("dashboard-conversations"), {"status": "bot"})
         self.assertContains(resp, "Clear filters")
+
+    def test_date_range_filters_conversations(self):
+        three_days_ago = (timezone.now() - dt.timedelta(days=3)).date()
+        Conversation.objects.filter(pk=self.stranger_conversation.pk).update(
+            last_message_at=timezone.now() - dt.timedelta(days=10))
+        url = reverse("dashboard-conversations")
+        # From three days ago: only Karim's recent chat.
+        resp = self.client.get(url, {"date_from": three_days_ago.isoformat()})
+        self.assertContains(resp, "Karim Ahmed")
+        self.assertNotContains(resp, "Website visitor")
+        # Until three days ago: only the stranger's old chat.
+        resp = self.client.get(url, {"date_to": three_days_ago.isoformat()})
+        self.assertContains(resp, "Website visitor")
+        self.assertNotContains(resp, "Karim Ahmed")
+        # The CSV export shares the filter, so downloads match the screen.
+        resp = self.client.get(reverse("dashboard-conversation-export"),
+                               {"date_to": three_days_ago.isoformat()})
+        self.assertEqual(resp.content.decode().count("Website visitor"), 1)
+
+    def test_date_range_filters_profiles(self):
+        TravelProfile.objects.filter(pk=self.profile.pk).update(
+            updated_at=timezone.now() - dt.timedelta(days=30))
+        yesterday = (timezone.now() - dt.timedelta(days=1)).date().isoformat()
+        url = reverse("dashboard-profiles")
+        resp = self.client.get(url, {"date_from": yesterday})
+        self.assertNotContains(resp, "Karim Ahmed")  # profile is 30 days stale
+        resp = self.client.get(url, {"date_to": yesterday})
+        self.assertContains(resp, "Karim Ahmed")
+
+    def test_malformed_dates_are_ignored_not_500(self):
+        # Same robustness rule as ?channel=: bad input shows everything.
+        for url_name in ("dashboard-conversations", "dashboard-profiles",
+                         "dashboard-conversation-export", "dashboard-profile-export-csv"):
+            resp = self.client.get(reverse(url_name),
+                                   {"date_from": "not-a-date", "date_to": "31/02/2020"})
+            self.assertEqual(resp.status_code, 200, url_name)
 
 

@@ -258,14 +258,28 @@ def channel_delete(request, pk):
 
 # ---------- Conversations (read-only review + Phase 9 handoff) ----------
 
+def _parse_date(value):
+    """Strict YYYY-MM-DD date-picker value; anything malformed is ignored
+    (None) instead of blowing up the query with a ValidationError."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _filtered_conversations(request):
     """Conversations filtered by the dashboard filter bar. Shared by the list
     view and the CSV export so a download always matches what's on screen.
 
     Supported filters: channel, status, q (matches the customer fields plus
     the TravelProfile the bot extracts from chat — name, WhatsApp number,
-    nationality) and has_details (visitors with contact info on file: an
-    email or bot-captured profile details, not the removed pre-chat form).
+    nationality), has_details (visitors with contact info on file: an
+    email or bot-captured profile details, not the removed pre-chat form)
+    and date_from/date_to (conversations active in that period, matched
+    on last_message_at).
     """
     conversations = Conversation.objects.select_related(
         "customer", "customer__channel", "customer__travel_profile", "assigned_agent"
@@ -274,6 +288,8 @@ def _filtered_conversations(request):
     status = request.GET.get("status")
     query = (request.GET.get("q") or "").strip()
     has_details = request.GET.get("has_details")
+    date_from = _parse_date(request.GET.get("date_from"))
+    date_to = _parse_date(request.GET.get("date_to"))
     if channel_id:
         try:
             uuid_lib.UUID(channel_id)
@@ -304,12 +320,18 @@ def _filtered_conversations(request):
             | Q(customer__travel_profile__full_name="",
                customer__travel_profile__whatsapp_number="")
         )
+    if date_from:
+        conversations = conversations.filter(last_message_at__date__gte=date_from)
+    if date_to:
+        conversations = conversations.filter(last_message_at__date__lte=date_to)
     return conversations
 
 
 @staff_required
 def conversation_list(request):
     filtered = _filtered_conversations(request)
+    date_from = _parse_date(request.GET.get("date_from"))
+    date_to = _parse_date(request.GET.get("date_to"))
     return render(request, "dashboard/conversation_list.html", {
         "conversations": filtered[:200],
         "channels": Channel.objects.all(),
@@ -318,6 +340,8 @@ def conversation_list(request):
         "selected_status": request.GET.get("status") or "",
         "selected_query": (request.GET.get("q") or "").strip(),
         "selected_has_details": request.GET.get("has_details") or "",
+        "selected_date_from": date_from.isoformat() if date_from else "",
+        "selected_date_to": date_to.isoformat() if date_to else "",
         "querystring": request.GET.urlencode(),
         "filtered_count": filtered.count(),
         "total_count": Conversation.objects.count(),
@@ -423,7 +447,9 @@ PROFILE_EXPORT_HEADERS = [
 
 
 def _filtered_profiles(request):
-    """Shared query for the list page and both exports (filters stay in sync)."""
+    """Shared query for the list page and both exports (filters stay in sync).
+    date_from/date_to filter on updated_at — when the bot last captured or
+    refreshed details for the lead."""
     qs = TravelProfile.objects.select_related("customer", "customer__channel")
     channel_id = (request.GET.get("channel") or "").strip()
     if channel_id:
@@ -448,18 +474,28 @@ def _filtered_profiles(request):
             | Q(customer__display_name__icontains=q)
             | Q(customer__email__icontains=q)
         )
+    date_from = _parse_date(request.GET.get("date_from"))
+    date_to = _parse_date(request.GET.get("date_to"))
+    if date_from:
+        qs = qs.filter(updated_at__date__gte=date_from)
+    if date_to:
+        qs = qs.filter(updated_at__date__lte=date_to)
     return qs
 
 
 @staff_required
 def profile_list(request):
     profiles = _filtered_profiles(request)
+    date_from = _parse_date(request.GET.get("date_from"))
+    date_to = _parse_date(request.GET.get("date_to"))
     return render(request, "dashboard/profile_list.html", {
         "profiles": profiles[:200],
         "channels": Channel.objects.all(),
         "selected_channel": (request.GET.get("channel") or "").strip(),
         "selected_complete": (request.GET.get("complete") or "").strip(),
         "selected_query": (request.GET.get("q") or "").strip(),
+        "selected_date_from": date_from.isoformat() if date_from else "",
+        "selected_date_to": date_to.isoformat() if date_to else "",
         "querystring": request.GET.urlencode(),
         "filtered_count": profiles.count(),
         "total_count": TravelProfile.objects.count(),
