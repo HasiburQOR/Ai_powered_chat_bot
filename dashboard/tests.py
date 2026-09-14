@@ -9,6 +9,7 @@ from django.utils import timezone
 from conversations.models import Conversation, Customer, Message
 from knowledge.models import Rule
 from platforms.models import Channel
+from profiles.models import TravelProfile
 
 
 class ChannelCrudTests(TestCase):
@@ -284,5 +285,76 @@ class RuleCrudTests(TestCase):
             reverse("dashboard-rule-edit", args=[rule.pk]),
         ):
             self.assertEqual(anonymous.get(url).status_code, 302, url)
+
+
+class VisitorProfileFilterTests(TestCase):
+    """Live-site regressions for the "dead-looking" filter bar: widget visitors
+    are all stored as 'Website visitor' with no email (the pre-chat form was
+    removed), so search and has_details that only looked at Customer fields
+    matched nothing and every filter redraw looked like a no-op."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff = get_user_model().objects.create_user(
+            username="staff", password="pw", is_staff=True
+        )
+        cls.wp = Channel.objects.create(name="Website", channel_type="wordpress", is_active=True)
+        karim = Customer.objects.create(
+            channel=cls.wp, external_id="wp-v1", display_name="Website visitor",
+        )
+        TravelProfile.objects.create(
+            customer=karim, full_name="Karim Ahmed",
+            whatsapp_number="+8801712345678", nationality="Bangladeshi",
+        )
+        cls.karim_conversation = Conversation.objects.create(
+            customer=karim, last_message_at=timezone.now())
+        stranger = Customer.objects.create(
+            channel=cls.wp, external_id="wp-v2", display_name="Website visitor",
+        )
+        Conversation.objects.create(customer=stranger, last_message_at=timezone.now())
+
+    def setUp(self):
+        self.client.force_login(self.staff)
+
+    def test_malformed_channel_id_returns_200_not_500(self):
+        # Regression: ?channel=not-a-uuid used to blow up with a ValidationError.
+        resp = self.client.get(reverse("dashboard-conversations"), {"channel": "not-a-uuid"})
+        self.assertEqual(resp.status_code, 200)
+        resp = self.client.get(reverse("dashboard-conversation-export"), {"channel": "not-a-uuid"})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_search_finds_visitor_by_extracted_profile(self):
+        for term in ("Karim", "+8801712345678", "Bangladeshi"):
+            resp = self.client.get(reverse("dashboard-conversations"), {"q": term})
+            self.assertContains(resp, "Karim Ahmed", msg_prefix=term)
+            self.assertNotContains(resp, "Website visitor", msg_prefix=term)
+
+    def test_has_details_uses_bot_captured_profile(self):
+        resp = self.client.get(reverse("dashboard-conversations"), {"has_details": "yes"})
+        self.assertContains(resp, "Karim Ahmed")
+        self.assertNotContains(resp, "Website visitor")
+        resp = self.client.get(reverse("dashboard-conversations"), {"has_details": "no"})
+        self.assertContains(resp, "Website visitor")
+        self.assertNotContains(resp, "Karim Ahmed")
+
+    def test_list_shows_counter_extracted_name_and_autosubmit(self):
+        resp = self.client.get(reverse("dashboard-conversations"))
+        self.assertContains(resp, "of 2 conversations")
+        self.assertContains(resp, "Karim Ahmed")      # extracted name beats the generic label
+        self.assertContains(resp, "Website visitor")  # stranger without a profile keeps it
+        self.assertEqual(resp.content.decode().count('onchange="this.form.submit()"'), 3)
+        self.assertContains(resp, f'action="{reverse("dashboard-conversations")}"')
+
+    def test_profile_list_counter_and_autosubmit(self):
+        resp = self.client.get(reverse("dashboard-profiles"))
+        self.assertContains(resp, "of 1 profile")
+        self.assertEqual(resp.content.decode().count('onchange="this.form.submit()"'), 2)
+        self.assertContains(resp, f'action="{reverse("dashboard-profiles")}"')
+
+    def test_clear_filters_link_only_appears_when_filtering(self):
+        resp = self.client.get(reverse("dashboard-conversations"))
+        self.assertNotContains(resp, "Clear filters")
+        resp = self.client.get(reverse("dashboard-conversations"), {"status": "bot"})
+        self.assertContains(resp, "Clear filters")
 
 

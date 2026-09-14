@@ -262,19 +262,24 @@ def _filtered_conversations(request):
     """Conversations filtered by the dashboard filter bar. Shared by the list
     view and the CSV export so a download always matches what's on screen.
 
-    Supported filters: channel, status, q (matches the visitor details captured
-    by the widget's pre-chat form — name, email, phone — plus external ID) and
-    has_details (restrict to visitors who provided contact details).
+    Supported filters: channel, status, q (matches the customer fields plus
+    the TravelProfile the bot extracts from chat — name, WhatsApp number,
+    nationality) and has_details (visitors with contact info on file: an
+    email or bot-captured profile details, not the removed pre-chat form).
     """
     conversations = Conversation.objects.select_related(
-        "customer", "customer__channel", "assigned_agent"
+        "customer", "customer__channel", "customer__travel_profile", "assigned_agent"
     ).order_by("-last_message_at")
-    channel_id = request.GET.get("channel")
+    channel_id = (request.GET.get("channel") or "").strip()
     status = request.GET.get("status")
     query = (request.GET.get("q") or "").strip()
     has_details = request.GET.get("has_details")
     if channel_id:
-        conversations = conversations.filter(customer__channel_id=channel_id)
+        try:
+            uuid_lib.UUID(channel_id)
+            conversations = conversations.filter(customer__channel_id=channel_id)
+        except ValueError:
+            pass  # malformed channel id: show everything instead of a 500
     if status:
         conversations = conversations.filter(status=status)
     if query:
@@ -283,25 +288,39 @@ def _filtered_conversations(request):
             | Q(customer__email__icontains=query)
             | Q(customer__phone__icontains=query)
             | Q(customer__external_id__icontains=query)
+            | Q(customer__travel_profile__full_name__icontains=query)
+            | Q(customer__travel_profile__whatsapp_number__icontains=query)
+            | Q(customer__travel_profile__nationality__icontains=query)
         )
     if has_details == "yes":
-        conversations = conversations.exclude(customer__email="")
+        conversations = conversations.filter(
+            ~Q(customer__email="")
+            | Q(customer__travel_profile__full_name__gt="")
+            | Q(customer__travel_profile__whatsapp_number__gt="")
+        )
     elif has_details == "no":
-        conversations = conversations.filter(customer__email="")
+        conversations = conversations.filter(customer__email="").filter(
+            Q(customer__travel_profile__isnull=True)
+            | Q(customer__travel_profile__full_name="",
+               customer__travel_profile__whatsapp_number="")
+        )
     return conversations
 
 
 @staff_required
 def conversation_list(request):
+    filtered = _filtered_conversations(request)
     return render(request, "dashboard/conversation_list.html", {
-        "conversations": _filtered_conversations(request)[:200],
+        "conversations": filtered[:200],
         "channels": Channel.objects.all(),
         "statuses": Conversation.Status.choices,
-        "selected_channel": request.GET.get("channel") or "",
+        "selected_channel": (request.GET.get("channel") or "").strip(),
         "selected_status": request.GET.get("status") or "",
         "selected_query": (request.GET.get("q") or "").strip(),
         "selected_has_details": request.GET.get("has_details") or "",
         "querystring": request.GET.urlencode(),
+        "filtered_count": filtered.count(),
+        "total_count": Conversation.objects.count(),
     })
 
 
@@ -442,7 +461,8 @@ def profile_list(request):
         "selected_complete": (request.GET.get("complete") or "").strip(),
         "selected_query": (request.GET.get("q") or "").strip(),
         "querystring": request.GET.urlencode(),
-        "total_count": profiles.count(),
+        "filtered_count": profiles.count(),
+        "total_count": TravelProfile.objects.count(),
     })
 
 
