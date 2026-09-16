@@ -2,7 +2,7 @@
 
 ## 1. Summary
 
-An AI-powered chatbot for handling customer conversations on behalf of the company. One shared "brain" (memory, rules, knowledge base, LLM) sits behind three customer-facing surfaces: Instagram DMs, Messenger, and a chat-bubble widget embedded on the company WordPress site. Admins manage everything — which LLM provider to use, what the bot knows, what rules it must follow, and its conversation history — through a web dashboard.
+An AI-powered chatbot for handling customer conversations on behalf of the company. One shared "brain" (memory, rules, knowledge base, LLM) sits behind four customer-facing surfaces: Instagram DMs, Messenger, WhatsApp, and a chat-bubble widget embedded on the company WordPress site. Admins manage everything — which LLM provider to use, what the bot knows, what rules it must follow, and its conversation history — through a web dashboard.
 
 ## 2. Goals
 
@@ -14,7 +14,7 @@ An AI-powered chatbot for handling customer conversations on behalf of the compa
 
 ## 3. Target users
 
-- **End customers** — messaging the company via Instagram, Messenger, or the website widget with questions (orders, product info, policies, support).
+- **End customers** — messaging the company via Instagram, Messenger, WhatsApp, or the website widget with questions (orders, product info, policies, support).
 - **Admin/staff** — manage the bot's knowledge, rules, LLM configuration, and review conversations via the dashboard. Single company, small internal team (no complex role hierarchy assumed for v1 — see Section 8).
 
 ## 4. Channels in scope
@@ -23,9 +23,10 @@ An AI-powered chatbot for handling customer conversations on behalf of the compa
 |---|---|---|
 | Instagram | DMs to the business's Instagram account | Via Meta Graph API (Instagram Messaging) |
 | Messenger | Messages to the business's Facebook Page | Via Meta Graph API (Messenger Platform) — shares the same Meta app/Page setup as Instagram |
+| WhatsApp | Messages to the business's WhatsApp number | Via the Meta WhatsApp Cloud API — same webhook endpoint family as IG/Messenger. Text messages only in v1 (images etc. acked and ignored); replies ride the 24-hour customer-service window |
 | WordPress website | Floating chat icon, bottom-right corner | Small embed script + iframe pointing at the bot backend. Must not visually interfere with the rest of the site. |
 
-**Explicitly out of scope:** WhatsApp. Do not integrate WhatsApp in any phase of this build.
+**Scope note:** WhatsApp was explicitly out of scope in the original v1 spec and was added afterwards via the Meta WhatsApp Cloud API — a deliberate scope change, recorded here.
 
 ## 5. Core features (functional requirements)
 
@@ -52,7 +53,7 @@ An AI-powered chatbot for handling customer conversations on behalf of the compa
 - Must support cheap/OpenAI-compatible providers (DeepSeek, Groq, OpenRouter, etc.) as well as Anthropic's native API, since these have slightly different request formats.
 
 ### 5.6 Channel management
-- Admins can connect/disconnect each channel (Instagram account, Messenger page, WordPress site) and edit its settings (credentials, widget appearance, welcome message) through the dashboard.
+- Admins can connect/disconnect each channel (Instagram account, Messenger page, WhatsApp number, WordPress site) and edit its settings (credentials, widget appearance, welcome message) through the dashboard.
 - Multiple connections of the same type should be supported without a schema change (e.g. a second Instagram account later).
 
 ### 5.7 Conversation history & review
@@ -86,6 +87,6 @@ An AI-powered chatbot for handling customer conversations on behalf of the compa
 ## 9. Future / explicitly deferred
 
 - Full human agent inbox with real-time takeover and notifications.
-- WhatsApp or any other channel beyond the three listed.
+- Any channel beyond the four listed (WhatsApp itself was promoted into scope after v1, via the Meta WhatsApp Cloud API).
 - Multi-tenant support for other client businesses.
 - Analytics/reporting dashboard beyond raw conversation logs.

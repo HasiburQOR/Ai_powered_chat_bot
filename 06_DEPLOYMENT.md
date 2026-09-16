@@ -248,7 +248,7 @@ Then test the full flow in the browser: `/accounts/password_reset/` → enter yo
 
 > Make sure the staff user has an **email address** set (Django admin → Users → edit), otherwise reset lookup won't find the account.
 
-## 7. Wire the Meta webhook (Instagram / Messenger)
+## 7. Wire the Meta webhook (Instagram / Messenger / WhatsApp)
 
 1. In the [Meta developer app](https://developers.facebook.com/apps) → *Webhooks* → add callback URL:
    `https://chat.yourcompany.com/webhooks/meta/`
@@ -256,7 +256,9 @@ Then test the full flow in the browser: `/accounts/password_reset/` → enter yo
 3. Subscribe to `messages` / `messaging_postbacks` fields for the page/IG account.
 4. Paste the app secret + page access token in the dashboard channel (they're encrypted at rest with `FIELD_ENCRYPTION_KEY`).
 
-Until Meta approves the app for public use, Instagram/Messenger work with test accounts only — the website widget is unaffected.
+For **WhatsApp**, in the same Meta app: add the *WhatsApp* product, then under *WhatsApp → Configuration* set the same callback URL + verify token and subscribe to the `messages` field. Create a `whatsapp` channel in the dashboard with credentials `{"phone_number_id", "waba_id", "access_token", "app_secret", "verify_token"}` — `phone_number_id` comes from *API Setup* (or `GET /{waba_id}/phone_numbers`), and `access_token` should be a permanent System User token with `whatsapp_business_messaging`, not the temporary test token.
+
+Until Meta approves the app for public use, Instagram/Messenger work with test accounts only — the website widget is unaffected. WhatsApp needs a business verification + quality-level bump for production messaging volume; until then the numbers stay in a sandbox tier.
 
 ## 8. Embed the website chat widget on WordPress
 
@@ -285,6 +287,7 @@ The widget header shows the channel's `bot_name` credential (defaults to `"Assis
 - [ ] Widget on WordPress: bubble opens, conversation replies, session persists on reload
 - [ ] `/webhooks/meta/` GET with verify token returns the challenge
 - [ ] Instagram/Messenger test message gets an AI reply
+- [ ] WhatsApp test message (to the business number) gets an AI reply; image messages are ignored gracefully
 - [ ] `docker compose ps` — everything healthy
 - [ ] HTTP redirects to HTTPS (`curl -I http://your-domain` → 301)
 

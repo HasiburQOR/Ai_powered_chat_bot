@@ -12,39 +12,60 @@ logger = logging.getLogger(__name__)
 WIDGET_ERROR_TEXT = "Sorry, something went wrong on our side. Please try again in a moment."
 
 
+# The credential key that identifies which account on a channel type
+# received a message: page_id for the Meta messaging surfaces (Messenger /
+# Instagram), phone_number_id for the WhatsApp Cloud API.
+CHANNEL_IDENTITY_KEYS = {
+    "instagram": "page_id",
+    "messenger": "page_id",
+    "whatsapp": "phone_number_id",
+}
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=10)
-def process_inbound_message(self, channel_type, page_id, sender_id, text, raw_payload=None):
+def process_inbound_message(self, channel_type, page_id, sender_id, text,
+                            raw_payload=None, profile_name=""):
     """Webhook entrypoint: resolve channel/customer/conversation, run the engine,
-    send the reply via the platform's Graph API."""
+    send the reply via the platform's Graph API. `page_id` is the channel's
+    account identifier — page_id for Messenger/Instagram, phone_number_id for
+    WhatsApp. `profile_name` (WhatsApp contacts[0].profile.name) labels the
+    Customer when available."""
     from bot.engine import handle_inbound_message
     from conversations.models import Conversation, Customer
     from django.utils import timezone
     from platforms.models import Channel
     from platforms.send import send_platform_reply
 
-    # credentials are encrypted at rest, so matching on page_id must happen in Python.
+    # credentials are encrypted at rest, so matching on the identity key must
+    # happen in Python.
+    identity_key = CHANNEL_IDENTITY_KEYS.get(channel_type, "page_id")
     channel = None
     for c in Channel.objects.filter(channel_type=channel_type, is_active=True):
-        if str((c.credentials or {}).get("page_id") or "") == str(page_id):
+        if str((c.credentials or {}).get(identity_key) or "") == str(page_id):
             channel = c
             break
     if channel is None:
         known = [
-            (c.credentials or {}).get("page_id")
+            (c.credentials or {}).get(identity_key)
             for c in Channel.objects.filter(channel_type=channel_type, is_active=True)
         ]
         logger.warning(
-            "Dropping inbound message: no active %s channel with page_id=%r (known: %r) "
+            "Dropping inbound message: no active %s channel with %s=%r (known: %r) "
             "from sender=%r text=%r",
-            channel_type, str(page_id), known, sender_id, (text or "")[:100],
+            channel_type, identity_key, str(page_id), known, sender_id, (text or "")[:100],
         )
         return  # Unknown/deactivated channel — ignore.
 
     customer, _ = Customer.objects.get_or_create(
         channel=channel,
         external_id=sender_id,
-        defaults={"display_name": ""},
+        defaults={"display_name": profile_name or ""},
     )
+    # Backfill the display name for customers created before WhatsApp started
+    # sending profile names (or that chatted in nameless first).
+    if profile_name and not customer.display_name:
+        customer.display_name = profile_name
+        customer.save(update_fields=["display_name"])
     conversation = customer.conversations.order_by("-last_message_at").first()
     if conversation is None:
         conversation = Conversation.objects.create(

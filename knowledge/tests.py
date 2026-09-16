@@ -54,3 +54,47 @@ class RetrievalTests(TestCase):
         from knowledge.retrieval import retrieve_relevant_chunks
         with patch("knowledge.retrieval.embed_text", return_value=None):
             self.assertEqual(list(retrieve_relevant_chunks("anything")), [])
+
+
+class DeepContextDefaultsMigrationTests(TestCase):
+    """The 0007 data migration must reach EXISTING databases: the BotSettings
+    row is created via get_or_create, so raising the model defaults alone
+    never touches a live deployment still holding max_context_messages=10 /
+    memory_summary_trigger_count=20 (the 'bot forgets after ~10 messages'
+    state). Dashboard-tuned values must survive untouched."""
+
+    def setUp(self):
+        super().setUp()
+        # BotSettings is cached ~30s and the locmem cache is NOT rolled back
+        # between tests — keep this class from seeing (or poisoning) others.
+        from django.core.cache import cache
+        from knowledge.models import BOT_SETTINGS_CACHE_KEY
+        cache.delete(BOT_SETTINGS_CACHE_KEY)
+
+    def test_old_defaults_are_bumped_dashboard_values_survive(self):
+        import importlib
+        from django.apps import apps as global_apps
+        from knowledge.models import BotSettings
+        migration = importlib.import_module(
+            "knowledge.migrations.0007_deep_context_defaults")
+
+        row = BotSettings.load()
+        row.max_context_messages = 10          # the old shipped default
+        row.memory_summary_trigger_count = 20  # the old shipped default
+        row.save()
+
+        migration.deepen_memory(global_apps, None)
+
+        row.refresh_from_db()
+        self.assertEqual(row.max_context_messages, 50)
+        self.assertEqual(row.memory_summary_trigger_count, 10)
+
+        # A row an admin deliberately retuned in the dashboard must never
+        # be clobbered by the migration.
+        row.max_context_messages = 15
+        row.memory_summary_trigger_count = 12
+        row.save()
+        migration.deepen_memory(global_apps, None)
+        row.refresh_from_db()
+        self.assertEqual(row.max_context_messages, 15)
+        self.assertEqual(row.memory_summary_trigger_count, 12)

@@ -9,12 +9,12 @@ Every model marked **CRUD: full** gets Create/Read/Update/Delete dashboard views
 ## `platforms` app
 
 ### `Channel`
-The connection to one external surface (one Instagram account, one Messenger page, one WordPress site). Multiple rows of the same `channel_type` are allowed — this is how a second Instagram account later doesn't require a schema change.
+The connection to one external surface (one Instagram account, one Messenger page, one WhatsApp number, one WordPress site). Multiple rows of the same `channel_type` are allowed — this is how a second Instagram account later doesn't require a schema change.
 
 | Field | Type | Notes |
 |---|---|---|
 | `id` | UUID pk | |
-| `channel_type` | CharField, choices: `instagram`, `messenger`, `wordpress` | |
+| `channel_type` | CharField, choices: `instagram`, `messenger`, `whatsapp`, `wordpress` | |
 | `name` | CharField | Admin-facing label, e.g. "Main IG Account" |
 | `credentials` | JSONField, **encrypted** | Structure varies by type — see below |
 | `is_active` | BooleanField, default `True` | Toggles whether the bot responds on this channel |
@@ -23,6 +23,7 @@ The connection to one external surface (one Instagram account, one Messenger pag
 **`credentials` shape by `channel_type`:**
 - `instagram`: `{"page_id", "ig_business_id", "page_access_token", "verify_token"}`
 - `messenger`: `{"page_id", "page_access_token", "verify_token", "app_secret"}`
+- `whatsapp`: `{"phone_number_id", "waba_id", "access_token", "app_secret", "verify_token"}` — `phone_number_id` is what inbound webhooks are matched against; `access_token` is a (permanent) System User token; `app_secret` verifies `X-Hub-Signature-256`
 - `wordpress`: `{"site_key", "allowed_domain", "bot_name", "welcome_message", "theme_color", "icon_position"}`
 
 **CRUD:** full, but **delete is soft** (`is_active=False`) — `Conversation` rows reference `Channel` via `Customer`, so a hard delete would orphan history. Dashboard delete action should confirm and then deactivate, not `DELETE FROM`.
@@ -91,8 +92,8 @@ Global bot behavior not tied to a specific provider. Enforce singleton via a fix
 | Field | Type | Notes |
 |---|---|---|
 | `fallback_message` | TextField | Sent ONLY when the LLM could not answer even after the retry ladder (provider outage/timeout/empty content). Never word it "I'm not sure / let me get a team member" — that reads as the bot being oblivious and kills travel leads |
-| `max_context_messages` | IntegerField, default `10` | How many recent messages count as short-term memory |
-| `memory_summary_trigger_count` | IntegerField, default `20` | Regenerate `Customer.memory_summary` every N new CUSTOMER messages (bot bubbles don't count) |
+| `max_context_messages` | IntegerField, default `50` | How many recent messages count as short-term memory. Deep recall so the bot no longer "forgets" after ~10 messages (~4k tokens/call on long chats); keep above `memory_summary_trigger_count` so nothing falls into a gap |
+| `memory_summary_trigger_count` | IntegerField, default `10` | Regenerate `Customer.memory_summary` every N new CUSTOMER messages (bot bubbles don't count). Must stay below `max_context_messages` so context leaving the window is already captured in the summary |
 | `business_hours` | JSONField, blank | Optional, used by rules/prompt context |
 | `profile_collection_enabled` | BooleanField, default `True` | When on, the bot asks new contacts a short set of travel-profile questions after its first reply in a new conversation, and files their answers into a `TravelProfile` |
 | `profile_intro_message` | TextField | The scripted question sent right after the bot's first reply in a new conversation (requires `profile_collection_enabled`) |

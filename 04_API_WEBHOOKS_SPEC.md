@@ -1,29 +1,31 @@
 # API & Webhook Specification — AI Customer Support Chatbot
 
-## 1. Meta webhooks (Instagram + Messenger, shared endpoint)
+## 1. Meta webhooks (Instagram + Messenger + WhatsApp, shared endpoint)
 
-Both platforms go through the same Meta app and Graph API, so one endpoint handles both; the payload shape tells you which is which.
+All three surfaces go through Meta apps on the same Graph API, so one endpoint handles them; the payload shape tells you which is which.
 
 ### `GET /webhooks/meta/`
 Verification handshake Meta calls when you register the webhook URL.
 
 - Query params: `hub.mode`, `hub.verify_token`, `hub.challenge`
-- Look up the matching `Channel.credentials["verify_token"]` (check both `instagram` and `messenger` channels — or store one shared verify token if using a single Meta app for both, which is the common setup).
+- Look up the matching `Channel.credentials["verify_token"]` (check `instagram`, `messenger`, and `whatsapp` channels — or store one shared verify token if using a single Meta app, which is the common setup). The WhatsApp Cloud API uses the exact same `hub.*` handshake.
 - If `hub.mode == "subscribe"` and the token matches, return `hub.challenge` as plain text with status 200. Otherwise, 403.
 
 ### `POST /webhooks/meta/`
 Actual event delivery.
 
-1. Verify the `X-Hub-Signature-256` header: HMAC-SHA256 of the raw request body using the relevant `Channel.credentials["app_secret"]` (Messenger) — Instagram messaging webhooks under the same Meta app typically share the app secret. Reject with 403 if it doesn't match.
-2. Parse `entry[].messaging[]` (Messenger shape) — Instagram Messaging events arrive in a compatible `entry[].messaging[]` structure under the same webhook object; branch on the top-level `object` field (`"page"` vs `"instagram"`) to tag the channel type correctly.
-3. For each messaging event, extract: sender platform-scoped ID, message text, timestamp.
-4. Enqueue `process_inbound_message.delay(channel_type, page_id, sender_id, text, raw_payload)` as a Celery task.
-5. Return `200 OK` immediately — don't wait on the Celery task. Meta will retry aggressively on non-200 or slow responses.
+1. Verify the `X-Hub-Signature-256` header: HMAC-SHA256 of the raw request body using the relevant `Channel.credentials["app_secret"]` — Instagram messaging webhooks and WhatsApp Cloud API webhooks under the same Meta app share the app secret. Reject with 403 if it doesn't match.
+2. Parse by the top-level `object` field:
+   - `"page"` (Messenger) and `"instagram"`: Messenger shape `entry[].messaging[]` — for each event extract the sender platform-scoped ID and message text.
+   - `"whatsapp_business_account"` (WhatsApp Cloud API): `entry[].changes[].value.messages[]`. Resolve the channel by `value.metadata.phone_number_id`, the sender from `message["from"]` (the customer's wa_id), and the text from `message["text"]["body"]`. Only `type == "text"` messages are handled — images/audio/etc. are acked (200) and ignored. `contacts[0].profile.name` is passed along as `profile_name` so the `Customer` gets a display name (backfilled if the record predates it).
+3. Enqueue `process_inbound_message.delay(channel_type, account_id, sender_id, text, raw_payload, profile_name)` as a Celery task — `account_id` is `page_id` for Messenger/Instagram and `phone_number_id` for WhatsApp (the task maps channel type → identity credential key).
+4. Return `200 OK` immediately — don't wait on the Celery task. Meta will retry aggressively on non-200 or slow responses.
 
 ### Sending replies (not a webhook, but the outbound half)
 From the Celery task, after the bot engine produces a reply:
 - Messenger: `POST https://graph.facebook.com/v19.0/me/messages?access_token=<page_access_token>` with `{"recipient": {"id": sender_id}, "message": {"text": reply}}`
 - Instagram: same shape, Instagram-specific Graph API messaging endpoint under the same app — **check the current Meta Graph API docs at build time**, as endpoint paths and required permissions (`instagram_manage_messages`, `pages_messaging`, `pages_show_list`) do shift between API versions.
+- WhatsApp: `POST https://graph.facebook.com/v19.0/<phone_number_id>/messages` with `Authorization: Bearer <access_token>` and body `{"messaging_product": "whatsapp", "to": <wa_id>, "type": "text", "text": {"body": reply}}`. The bot's `**bold**` is converted to WhatsApp's `*bold*` syntax, and replies longer than 4096 chars are split into multiple bubbles at newline boundaries. Free-form text is only deliverable inside the 24-hour customer-service window after the customer's last inbound message — the bot replies immediately after an inbound, so this holds by construction.
 
 ## 2. WordPress widget
 

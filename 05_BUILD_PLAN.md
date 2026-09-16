@@ -170,4 +170,4 @@ FIELD_ENCRYPTION_KEY=generate-with-fernet-and-keep-secret
 - Encrypt-at-rest check: confirm `LLMConfig.api_key` and `Channel.credentials` are genuinely encrypted in the database, not just masked in the UI.
 - Rate limiting on `/widget/chat/<session_id>/send/` (basic per-session throttle) to prevent abuse.
 - Confirm webhook signature verification actually rejects tampered payloads (write a test for this specifically — it's the easiest thing to accidentally get wrong).
-- `docker compose up -d --build`, run migrations, create the first superuser, confirm all three channels end-to-end against the real deployed instance.
+- `docker compose up -d --build`, run migrations, create the first superuser, confirm all four channels end-to-end against the real deployed instance.

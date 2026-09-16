@@ -6,11 +6,12 @@ from core.fields import EncryptedJSONField
 
 
 class Channel(models.Model):
-    """One connection to an external surface (IG account, Messenger page, WordPress site)."""
+    """One connection to an external surface (IG account, Messenger page, WhatsApp number, WordPress site)."""
 
     class ChannelType(models.TextChoices):
         INSTAGRAM = 'instagram', 'Instagram'
         MESSENGER = 'messenger', 'Messenger'
+        WHATSAPP = 'whatsapp', 'WhatsApp'
         WORDPRESS = 'wordpress', 'WordPress'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

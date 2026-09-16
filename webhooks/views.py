@@ -23,8 +23,9 @@ def meta_verify(request):
     if mode != "subscribe" or not token:
         return HttpResponseForbidden("Bad verification request")
 
-    # Check every active Meta channel's verify_token (shared Meta app is common).
-    for channel in Channel.objects.filter(is_active=True, channel_type__in=["instagram", "messenger"]):
+    # Check every active Meta channel's verify_token (shared Meta app is common;
+    # the WhatsApp Cloud API uses the same hub.* handshake).
+    for channel in Channel.objects.filter(is_active=True, channel_type__in=["instagram", "messenger", "whatsapp"]):
         if (channel.credentials or {}).get("verify_token") == token:
             return HttpResponse(challenge, content_type="text/plain")
     return HttpResponseForbidden("Verify token mismatch")
@@ -37,7 +38,7 @@ def _find_channel_by_signature(payload: bytes, signature: str):
     if not signature:
         return None
 
-    channels = list(Channel.objects.filter(is_active=True, channel_type__in=["instagram", "messenger"]))
+    channels = list(Channel.objects.filter(is_active=True, channel_type__in=["instagram", "messenger", "whatsapp"]))
 
     if signature.startswith("sha256="):
         digest = signature.removeprefix("sha256=")
@@ -87,15 +88,22 @@ def meta_webhook(request):
     except ValueError:
         return HttpResponseForbidden("Invalid JSON")
 
-    # Top-level object tells us which surface: "page" (Messenger) vs "instagram".
+    # Top-level object tells us which surface: "page" (Messenger),
+    # "instagram", or "whatsapp_business_account" (WhatsApp Cloud API).
     obj = data.get("object")
     if obj == "page":
-        channel_type = "messenger"
+        _enqueue_messaging_events(data, "messenger", channel)
     elif obj == "instagram":
-        channel_type = "instagram"
-    else:
-        return HttpResponse(status=200)  # Unknown object — ack and ignore.
+        _enqueue_messaging_events(data, "instagram", channel)
+    elif obj == "whatsapp_business_account":
+        _enqueue_whatsapp_events(data)
+    # Unknown object — ack and ignore (Meta retries non-200 aggressively).
 
+    return HttpResponse(status=200)
+
+
+def _enqueue_messaging_events(data, channel_type, channel):
+    """Messenger / Instagram shape: entry[].messaging[]."""
     page_id = (channel.credentials or {}).get("page_id")
     for entry in data.get("entry", []):
         # Prefer the page_id actually present in the payload.
@@ -108,4 +116,30 @@ def meta_webhook(request):
                 continue  # Non-text events (reactions, read receipts, etc.)
             process_inbound_message.delay(channel_type, entry_page_id, sender_id, text, raw_payload=event)
 
-    return HttpResponse(status=200)
+
+def _enqueue_whatsapp_events(data):
+    """WhatsApp Cloud API shape: entry[].changes[].value.messages[].
+
+    The channel is identified by metadata.phone_number_id (the business
+    number that received the message); the sender by message["from"] (the
+    customer's wa_id / phone number). Only type == "text" messages are
+    handled in v1 — images, audio, locations etc. are acked and ignored.
+    contacts[0].profile.name carries the customer's WhatsApp profile name,
+    passed along so the task can label the Customer record."""
+    for entry in data.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value") or {}
+            phone_number_id = (value.get("metadata") or {}).get("phone_number_id")
+            contacts = value.get("contacts") or [{}]
+            profile_name = (contacts[0].get("profile") or {}).get("name") or ""
+            for message in value.get("messages") or []:
+                if message.get("type") != "text":
+                    continue  # Non-text message (image, audio, location, ...)
+                text = ((message.get("text") or {}).get("body") or "").strip()
+                sender_id = message.get("from")
+                if not text or not sender_id or not phone_number_id:
+                    continue
+                process_inbound_message.delay(
+                    "whatsapp", str(phone_number_id), sender_id, text,
+                    raw_payload=message, profile_name=profile_name,
+                )

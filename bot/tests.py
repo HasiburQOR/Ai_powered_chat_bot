@@ -9,7 +9,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from bot.engine import _is_abusive, _profile_context, handle_inbound_message
-from bot.tasks import summarize_idle_customers
+from bot.tasks import process_inbound_message, summarize_idle_customers
 from conversations.models import Conversation, Customer, Message
 from knowledge.models import Rule
 from llm.models import LLMConfig
@@ -274,6 +274,35 @@ class PromptAssemblyTests(EngineTestMixin, TestCase):
         self.assertTrue(
             any(t.startswith("Today's date is") for t in system_texts),
             "the model needs today's date to interpret relative dates")
+
+    @patch("bot.engine.get_adapter")
+    def test_history_window_tracks_settings_deep_recall(self, mock_get_adapter):
+        """Default memory used to be 10 messages, so on long chats the bot
+        visibly 'forgot' anything older. The deep-recall default (50) must
+        actually flow through: the adapter receives the last 50 messages
+        PLUS the one being answered."""
+        from django.core.cache import cache
+        from knowledge.models import BOT_SETTINGS_CACHE_KEY
+        # BotSettings is cached ~30s and the locmem cache is NOT rolled back
+        # between tests — start from this test's own row.
+        cache.delete(BOT_SETTINGS_CACHE_KEY)
+        conversation = self._conversation()
+        for i in range(60):
+            Message.objects.create(
+                conversation=conversation,
+                sender_type=Message.SenderType.CUSTOMER,
+                content=f"history message {i}")
+        mock_get_adapter.return_value.send.return_value = "ok"
+
+        handle_inbound_message(conversation, "the newest question")
+
+        messages = mock_get_adapter.return_value.send.call_args.args[0]
+        user_texts = [m["content"] for m in messages if m["role"] == "user"]
+        # 50-message window + the current message = 51 user bubbles.
+        self.assertEqual(len(user_texts), 51)
+        self.assertNotIn("history message 9", user_texts)   # outside window
+        self.assertIn("history message 10", user_texts)     # oldest visible
+        self.assertEqual(user_texts[-1], "the newest question")
 
 
 class ProfileContextTests(EngineTestMixin, TestCase):
@@ -556,4 +585,68 @@ class EngineFallbackIntroTests(EngineTestMixin, TestCase):
         self.assertEqual(len(out), 1)
         self.assertIn("send your message again", out[0].content)
         self.assertNotIn("WhatsApp number", out[0].content)
+
+
+class ProcessInboundMessageTests(TestCase):
+    """Webhook task plumbing: WhatsApp inbound must resolve the channel by
+    phone_number_id (Messenger/Instagram stay on page_id) and label the
+    Customer with the WhatsApp profile name when one is available."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.whatsapp = Channel.objects.create(
+            name="WA Line", channel_type="whatsapp", is_active=True,
+            credentials={"phone_number_id": "PNID1", "access_token": "tok"})
+        cls.messenger = Channel.objects.create(
+            name="FB Page", channel_type="messenger", is_active=True,
+            credentials={"page_id": "999"})
+
+    def _run(self, *args, **kwargs):
+        # Bound Celery task — .apply() runs it inline with self injected.
+        return process_inbound_message.apply(args=args, kwargs=kwargs, throw=True)
+
+    @patch("bot.engine.handle_inbound_message")
+    def test_whatsapp_channel_matched_by_phone_number_id(self, mock_engine):
+        mock_engine.return_value = []
+        self._run("whatsapp", "PNID1", "8801712345678", "hello",
+                  raw_payload={"id": "wamid.1"}, profile_name="Ravi Kumar")
+        mock_engine.assert_called_once()
+        conversation = mock_engine.call_args.args[0]
+        self.assertEqual(conversation.customer.channel, self.whatsapp)
+        customer = Customer.objects.get(channel=self.whatsapp, external_id="8801712345678")
+        self.assertEqual(customer.display_name, "Ravi Kumar")
+
+    @patch("bot.engine.handle_inbound_message")
+    def test_profile_name_backfills_existing_nameless_customer(self, mock_engine):
+        existing = Customer.objects.create(
+            channel=self.whatsapp, external_id="8801712345678", display_name="")
+        mock_engine.return_value = []
+        self._run("whatsapp", "PNID1", "8801712345678", "hello", profile_name="Ravi Kumar")
+        existing.refresh_from_db()
+        self.assertEqual(existing.display_name, "Ravi Kumar")
+
+    @patch("bot.engine.handle_inbound_message")
+    def test_messenger_channel_still_matched_by_page_id(self, mock_engine):
+        mock_engine.return_value = []
+        self._run("messenger", "999", "psid-1", "hello")
+        mock_engine.assert_called_once()
+        self.assertTrue(
+            Customer.objects.filter(channel=self.messenger, external_id="psid-1").exists())
+
+    def test_unknown_phone_number_id_is_dropped(self):
+        with patch("bot.engine.handle_inbound_message") as mock_engine:
+            self._run("whatsapp", "UNKNOWN", "8801712345678", "hello")
+        mock_engine.assert_not_called()
+        self.assertFalse(Customer.objects.exists())
+
+    @patch("platforms.send.requests.post")
+    @patch("bot.engine.handle_inbound_message")
+    def test_whatsapp_reply_goes_out_via_cloud_api(self, mock_engine, mock_post):
+        mock_post.return_value.ok = True
+        mock_engine.return_value = [SimpleNamespace(content="**Sure!** 5 days in **Baku**")]
+        self._run("whatsapp", "PNID1", "8801712345678", "hello")
+        self.assertEqual(mock_post.call_count, 1)
+        body = mock_post.call_args.kwargs["json"]
+        self.assertEqual(body["to"], "8801712345678")
+        self.assertEqual(body["text"]["body"], "*Sure!* 5 days in *Baku*")
 

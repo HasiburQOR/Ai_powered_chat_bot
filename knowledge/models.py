@@ -85,9 +85,17 @@ class BotSettings(models.Model):
                   'details.'
     )
     max_context_messages = models.PositiveIntegerField(
-        default=10, help_text='How many recent messages count as short-term memory')
+        default=50,
+        help_text='How many recent messages count as short-term memory. '
+                  '50 = deep recall (~4k tokens/call on long chats) so the '
+                  'bot no longer forgets after ~10 messages; keep this above '
+                  'memory_summary_trigger_count so nothing falls into a gap.')
     memory_summary_trigger_count = models.PositiveIntegerField(
-        default=20, help_text='Regenerate Customer.memory_summary every N new messages')
+        default=10,
+        help_text='Regenerate Customer.memory_summary every N new CUSTOMER '
+                  'messages (bot bubbles do not count). Keep below '
+                  'max_context_messages so older context is always inside '
+                  'either the recent-message window or the summary.')
     business_hours = models.JSONField(blank=True, default=dict, null=True,
                                       help_text='Optional, used by rules/prompt context')
     profile_collection_enabled = models.BooleanField(

@@ -15,7 +15,7 @@ A good first prompt to the agent: *"Read all 5 documents in /docs before writing
 
 - **Stack:** Django + HTMX (server-rendered, partial swaps — no separate React/DRF frontend) + Docker Compose + PostgreSQL + Celery/Redis.
 - **LLM is provider-agnostic and admin-configurable.** No provider is hardcoded. Admin picks a provider, pastes a base URL + API key + model name, and the bot uses it. This is the single most important architectural constraint — see `03_DATABASE_SCHEMA.md` → `LLMConfig`.
-- **Channels:** Instagram DMs, Messenger, and a WordPress chat-bubble widget. **WhatsApp is explicitly out of scope — do not add it.**
+- **Channels:** Instagram DMs, Messenger, WhatsApp (Meta WhatsApp Cloud API), and a WordPress chat-bubble widget. *(WhatsApp was originally out of scope for v1 and was deliberately added later — the docs below reflect the four-channel scope; see `04_API_WEBHOOKS_SPEC.md` for the Cloud API details.)*
 - **Human handoff** is stubbed (a `status` field + `Agent` model) but not fully built in v1. It's cheap to add now and expensive to bolt on later, so the schema supports it from day one even though the UI doesn't.
 - **Scope assumption:** this serves **one company** with possibly multiple pages/accounts per channel (e.g. two Instagram accounts), not a multi-tenant SaaS for many separate client businesses. If that changes, flag it before Phase 2 — it affects the schema (would need an `Organization` model wrapping everything).
 
