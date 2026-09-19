@@ -96,6 +96,32 @@ class MetaWebhookTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(mock_task.delay.call_args[0][0], "instagram")
 
+    @patch("webhooks.views.process_inbound_message")
+    def test_echo_of_own_reply_is_ignored(self, mock_task):
+        """Instagram mirrors every message the bot sends back as an is_echo
+        event; enqueuing it would make the bot reply to itself."""
+        payload = json.dumps({
+            "object": "instagram",
+            "entry": [{"id": "999", "messaging": [{
+                "sender": {"id": "999"}, "recipient": {"id": "12345"},
+                "message": {"text": "bot reply", "is_echo": True},
+            }]}],
+        }).encode()
+        resp = self._post_signed(payload)
+        self.assertEqual(resp.status_code, 200)
+        mock_task.delay.assert_not_called()
+
+    @patch("webhooks.views.process_inbound_message")
+    def test_post_without_trailing_slash_is_delivered(self, mock_task):
+        """Regression: a callback URL saved as /webhooks/meta (no slash) got a
+        301 that Meta never follows for POSTs, so messages silently vanished."""
+        payload = make_payload()
+        sig = "sha256=" + hmac.new(b"shhh-secret", payload, hashlib.sha256).hexdigest()
+        resp = self.client.post("/webhooks/meta", data=payload, content_type="application/json",
+                                HTTP_X_HUB_SIGNATURE_256=sig)
+        self.assertEqual(resp.status_code, 200)
+        mock_task.delay.assert_called_once()
+
     def test_get_without_hub_params_logs_rejection(self):
         """Regression: bare GETs (bot/scanner probes) used to 403 with NO log
         line, making stray 'django.request: Forbidden' entries impossible to

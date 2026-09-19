@@ -8,6 +8,7 @@ from django.test import SimpleTestCase, TestCase
 
 from platforms.models import Channel
 from platforms.send import (
+    INSTAGRAM_LOGIN_MESSAGES_URL,
     WHATSAPP_MESSAGES_URL,
     _chunk_text,
     _plain_text,
@@ -116,3 +117,44 @@ class WhatsAppSendTests(TestCase):
         mock_post.return_value.text = '{"error":{"code":131047}}'
         ok = send_platform_reply(self._channel(), "8801712345678", "hi")
         self.assertFalse(ok)
+
+
+class InstagramLoginSendTests(TestCase):
+    """Channels set up via "API setup with Instagram login" hold an Instagram
+    user token as access_token and must send through graph.instagram.com."""
+
+    @patch("platforms.send.requests.post")
+    def test_reply_sent_via_instagram_graph(self, mock_post):
+        mock_post.return_value.ok = True
+        channel = Channel.objects.create(
+            name="IG", channel_type="instagram",
+            credentials={"page_id": "17841400000000000", "access_token": "IGAAtok"},
+        )
+        self.assertTrue(send_platform_reply(channel, "igsid-1", "Hi **there**"))
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args[0][0], INSTAGRAM_LOGIN_MESSAGES_URL)
+        self.assertEqual(mock_post.call_args[1]["headers"]["Authorization"], "Bearer IGAAtok")
+        self.assertEqual(mock_post.call_args[1]["json"],
+                         {"recipient": {"id": "igsid-1"}, "message": {"text": "Hi there"}})
+
+    @patch("platforms.send.requests.post")
+    def test_page_token_channel_keeps_facebook_graph(self, mock_post):
+        mock_post.return_value.ok = True
+        channel = Channel.objects.create(
+            name="IG-FB", channel_type="instagram",
+            credentials={"page_id": "1", "page_access_token": "EAAtok"},
+        )
+        send_platform_reply(channel, "igsid-1", "Hi")
+        self.assertIn("graph.facebook.com", mock_post.call_args[0][0])
+
+    @patch("platforms.send.requests.post")
+    def test_long_reply_split_at_instagram_limit(self, mock_post):
+        mock_post.return_value.ok = True
+        channel = Channel.objects.create(
+            name="IG", channel_type="instagram",
+            credentials={"page_id": "1", "access_token": "IGAAtok"},
+        )
+        send_platform_reply(channel, "igsid-1", ("x" * 900 + "\n") * 3)
+        self.assertEqual(mock_post.call_count, 3)
+        for call in mock_post.call_args_list:
+            self.assertLessEqual(len(call[1]["json"]["message"]["text"]), 1000)

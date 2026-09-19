@@ -15,6 +15,12 @@ logger = logging.getLogger(__name__)
 GRAPH_API_VERSION = "v19.0"
 MESSAGES_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}/me/messages"
 WHATSAPP_MESSAGES_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{{phone_number_id}}/messages"
+# "Instagram API with Instagram Login" channels send through graph.instagram.com
+# with an Instagram user token (IGAA...), not a Facebook Page token.
+INSTAGRAM_LOGIN_MESSAGES_URL = "https://graph.instagram.com/v21.0/me/messages"
+
+# Instagram DMs reject text over 1000 characters.
+INSTAGRAM_TEXT_LIMIT = 1000
 
 # WhatsApp text bubbles are capped at 4096 characters; longer bot replies
 # must be split across multiple bubbles.
@@ -74,6 +80,18 @@ def _send_graph_message(access_token, recipient_id, text):
     return resp.ok
 
 
+def _send_instagram_login_message(access_token, recipient_id, text):
+    resp = requests.post(
+        INSTAGRAM_LOGIN_MESSAGES_URL,
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={"recipient": {"id": recipient_id}, "message": {"text": text}},
+        timeout=30,
+    )
+    if not resp.ok:
+        logger.error("Instagram send failed [%s]: %s", resp.status_code, resp.text)
+    return resp.ok
+
+
 def _send_whatsapp_message(access_token, phone_number_id, to, text):
     """Cloud API text send. Free-form text is only allowed inside the 24-hour
     customer-service window after the user's last inbound message — the bot
@@ -100,6 +118,18 @@ def _send_whatsapp_message(access_token, phone_number_id, to, text):
 def send_platform_reply(channel, recipient_id, text):
     """Dispatch an outbound reply via the channel's stored credentials."""
     creds = channel.credentials or {}
+
+    if channel.channel_type == "instagram" and not creds.get("page_access_token"):
+        # Instagram Login setup: credentials hold an Instagram user token as
+        # access_token instead of a Facebook Page token.
+        token = str(creds.get("access_token") or "").strip()
+        if not token:
+            logger.error("Channel %s has no page_access_token or access_token", channel.pk)
+            return False
+        ok = True
+        for part in _chunk_text(_plain_text(text), INSTAGRAM_TEXT_LIMIT):
+            ok = _send_instagram_login_message(token, recipient_id, part) and ok
+        return ok
 
     if channel.channel_type in ("instagram", "messenger"):
         token = creds.get("page_access_token")

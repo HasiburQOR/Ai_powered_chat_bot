@@ -157,6 +157,11 @@ def _enqueue_messaging_events(data, channel_type, channel):
         entry_page_id = str(entry.get("id") or page_id or "")
         for event in entry.get("messaging", []):
             message = event.get("message") or {}
+            if message.get("is_echo"):
+                # Our own outbound reply mirrored back (Instagram always sends
+                # these; Messenger does when message_echoes is subscribed).
+                # Processing it would make the bot answer itself.
+                continue
             text = message.get("text")
             sender_id = (event.get("sender") or {}).get("id")
             if not text or not sender_id:
