@@ -104,6 +104,15 @@ class MetaWebhookTests(TestCase):
             resp = self.client.get("/webhooks/meta/")
         self.assertEqual(resp.status_code, 403)
         self.assertTrue(any("bad verification request" in line for line in logs.output))
+        self.assertTrue(any("method=GET" in line for line in logs.output))
+
+    def test_every_request_logs_received_line(self):
+        """The early 'request received' line fires on EVERY request before any
+        validation — the definitive answer to 'did a POST ever arrive at all?',
+        separate from whether it was later rejected."""
+        with self.assertLogs("webhooks.views", level="INFO") as logs:
+            self.client.get("/webhooks/meta/")  # bare probe — worst case
+        self.assertTrue(any("request received: method=GET" in line for line in logs.output))
 
     @patch("webhooks.views.process_inbound_message")
     def test_accepted_post_logs_info_line(self, mock_task):
@@ -112,7 +121,10 @@ class MetaWebhookTests(TestCase):
         with self.assertLogs("webhooks.views", level="INFO") as logs:
             resp = self._post_signed(make_payload())
         self.assertEqual(resp.status_code, 200)
-        self.assertTrue(any("Meta webhook accepted" in line for line in logs.output))
+        accepted = [line for line in logs.output if "Meta webhook accepted" in line]
+        self.assertEqual(len(accepted), 1)
+        self.assertIn("method=POST", accepted[0])
+        self.assertTrue(any("request received: method=POST" in line for line in logs.output))
 
 
 def make_whatsapp_payload(sender_wa="8801712345678", text="hi there",

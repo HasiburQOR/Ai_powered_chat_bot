@@ -24,9 +24,9 @@ def meta_verify(request):
         # Not Meta (Meta always sends hub.mode + hub.verify_token) — almost
         # always a bot/scanner probe. Log the UA so stray 403s are attributable.
         logger.warning(
-            "Meta webhook GET rejected: bad verification request (mode=%r, "
-            "token_present=%s, ua=%r)",
-            mode, bool(token), request.headers.get("User-Agent", ""),
+            "Meta webhook rejected: bad verification request "
+            "(method=%s mode=%r token_present=%s ua=%r)",
+            request.method, mode, bool(token), request.headers.get("User-Agent", ""),
         )
         return HttpResponseForbidden("Bad verification request")
 
@@ -40,18 +40,20 @@ def meta_verify(request):
         stored = str((channel.credentials or {}).get("verify_token") or "").strip()
         if stored and hmac.compare_digest(stored, token):
             return HttpResponse(challenge, content_type="text/plain")
-    logger.warning("Meta webhook GET verification failed: verify token mismatch "
-                   "(check verify_token in the dashboard channel credentials)")
+    logger.warning("Meta webhook verification failed: verify token mismatch "
+                   "(method=%s; check verify_token in the dashboard channel credentials)",
+                   request.method)
     return HttpResponseForbidden("Verify token mismatch")
 
 
-def _find_channel_by_signature(payload: bytes, signature: str):
+def _find_channel_by_signature(payload: bytes, signature: str, method: str = ""):
     """Return the Meta channel whose app_secret validates X-Hub-Signature-256
     (or legacy X-Hub-Signature sha1), or None. Signature verification is
     mandatory in production — never trust unsigned payloads."""
     if not signature:
         logger.warning("Meta webhook rejected: X-Hub-Signature-256 header missing — "
-                       "if Meta is definitely calling, the reverse proxy may be stripping it")
+                       "if Meta is definitely calling, the reverse proxy may be stripping it "
+                       "(method=%s)", method)
         return None
 
     channels = list(Channel.objects.filter(is_active=True, channel_type__in=["instagram", "messenger", "whatsapp"]))
@@ -63,12 +65,13 @@ def _find_channel_by_signature(payload: bytes, signature: str):
         digest = signature.removeprefix("sha1=")
         hasher, algo_len = hashlib.sha1, 40
     else:
-        logger.warning("Meta webhook rejected: unrecognized signature format %r", signature[:16])
+        logger.warning("Meta webhook rejected: unrecognized signature format %r (method=%s)",
+                       signature[:16], method)
         return None
 
     if len(digest) != algo_len:
-        logger.warning("Meta webhook rejected: %s digest has wrong length %d (expected %d)",
-                       hasher().name, len(digest), algo_len)
+        logger.warning("Meta webhook rejected: %s digest has wrong length %d (expected %d) (method=%s)",
+                       hasher().name, len(digest), algo_len, method)
         return None
 
     with_secret = 0
@@ -85,12 +88,12 @@ def _find_channel_by_signature(payload: bytes, signature: str):
 
     # Diagnostics only — the secrets themselves are NEVER logged.
     logger.warning(
-        "Meta webhook rejected: signature matched no active channel. "
-        "active_meta_channels=%d channels_with_app_secret_key=%d "
+        "Meta webhook rejected: signature matched no active channel "
+        "(method=%s). active_meta_channels=%d channels_with_app_secret_key=%d "
         "(causes: stored app_secret differs from the Meta app's App Secret, "
         "the 'app_secret' key is missing/misspelled in the credentials JSON, "
         "or the channel holding it is deactivated)",
-        len(channels), with_secret,
+        method, len(channels), with_secret,
     )
     return None
 
@@ -98,6 +101,10 @@ def _find_channel_by_signature(payload: bytes, signature: str):
 @csrf_exempt
 def meta_endpoint(request):
     """Single shared endpoint: GET = verification handshake, POST = event delivery."""
+    # Fires on EVERY request before any validation — proves traffic reaches the
+    # view at all, regardless of outcome (200/403/405). This is the definitive
+    # signal for "did a POST ever arrive?", separate from "was it rejected?".
+    logger.info("Meta webhook request received: method=%s path=%s", request.method, request.path)
     if request.method == "GET":
         return meta_verify(request)
     return meta_webhook(request)
@@ -110,16 +117,18 @@ def meta_webhook(request):
     return 200 immediately — Meta retries aggressively on slow/non-200."""
     payload = request.body
     sig = request.headers.get("X-Hub-Signature-256") or request.headers.get("X-Hub-Signature", "")
-    channel = _find_channel_by_signature(payload, sig)
+    channel = _find_channel_by_signature(payload, sig, method=request.method)
     if channel is None:
-        logger.warning("Rejected Meta webhook with bad/missing signature or unmatched channel")
+        logger.warning("Rejected Meta webhook with bad/missing signature or unmatched channel "
+                       "(method=%s)", request.method)
         return HttpResponseForbidden("Invalid signature or channel")
 
     try:
         data = json.loads(payload)
     except ValueError:
         logger.warning("Meta webhook rejected: payload is not valid JSON after a "
-                       "valid signature (channel=%s, bytes=%d)", channel.pk, len(payload))
+                       "valid signature (method=%s channel=%s bytes=%d)",
+                       request.method, channel.pk, len(payload))
         return HttpResponseForbidden("Invalid JSON")
 
     # Top-level object tells us which surface: "page" (Messenger),
@@ -135,8 +144,8 @@ def meta_webhook(request):
 
     # Visible acceptance: a silent 200 made it impossible to tell whether
     # Meta's traffic was reaching the app at all.
-    logger.info("Meta webhook accepted: object=%s channel=%s bytes=%d",
-                obj, channel.pk, len(payload))
+    logger.info("Meta webhook accepted: object=%s channel=%s bytes=%d (method=%s)",
+                obj, channel.pk, len(payload), request.method)
     return HttpResponse(status=200)
 
 
