@@ -195,3 +195,38 @@ class WhatsAppWebhookTests(TestCase):
         resp = self._post_signed(json.dumps(payload).encode())
         self.assertEqual(resp.status_code, 200)
         mock_task.delay.assert_not_called()
+
+    def _swap_credentials(self, **new_values):
+        """Update the stored credentials via QuerySet.update so the class-level
+        cached instance from setUpTestData stays untouched for later tests."""
+        merged = dict(self.channel.credentials, **new_values)
+        Channel.objects.filter(pk=self.channel.pk).update(credentials=merged)
+
+    def test_padded_stored_app_secret_still_validates(self):
+        """Regression: an app_secret pasted with trailing whitespace (classic
+        copy-paste artifact) must still validate — the view strips it."""
+        self._swap_credentials(app_secret="wa-secret \n")
+        with patch("webhooks.views.process_inbound_message") as mock_task:
+            resp = self._post_signed(make_whatsapp_payload(), secret="wa-secret")
+        self.assertEqual(resp.status_code, 200)
+        mock_task.delay.assert_called_once()
+
+    def test_padded_stored_verify_token_still_verifies_get(self):
+        """Regression: a stored verify_token with a trailing newline must still
+        satisfy the GET verification handshake."""
+        self._swap_credentials(verify_token="wa-verify\n")
+        resp = self.client.get("/webhooks/meta/", {
+            "hub.mode": "subscribe", "hub.verify_token": "wa-verify",
+            "hub.challenge": "ch4ll3ng3"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b"ch4ll3ng3")
+
+    def test_missing_app_secret_key_rejected(self):
+        """Documents the classic misconfiguration: verify_token present (so GET
+        verification succeeds) but app_secret missing/mis-keyed → POST 403."""
+        broken = {k: v for k, v in self.channel.credentials.items() if k != "app_secret"}
+        Channel.objects.filter(pk=self.channel.pk).update(credentials=broken)
+        with patch("webhooks.views.process_inbound_message") as mock_task:
+            resp = self._post_signed(make_whatsapp_payload(), secret="wa-secret")
+        self.assertEqual(resp.status_code, 403)
+        mock_task.delay.assert_not_called()

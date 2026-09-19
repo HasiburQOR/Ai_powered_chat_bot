@@ -220,9 +220,16 @@ def channel_create(request):
 @staff_required
 def channel_update(request, pk):
     channel = get_object_or_404(Channel, pk=pk)
+    # Show the channel's CURRENT (decrypted) credentials in the editor. The old
+    # blank "leave unchanged" box made mis-keyed values — e.g. a WhatsApp
+    # channel missing its app_secret — impossible to notice while debugging
+    # webhook 403s. Blank on save still keeps the existing values; {} clears.
+    current_creds = json.dumps(channel.credentials, indent=2) if channel.credentials else ""
     form = ChannelForm(request.POST or None, instance=channel)
-    cred_form = ChannelCredentialsForm(request.POST or None, initial={"credentials": ""})
-    cred_form.fields["credentials"].help_text = "Leave blank to keep existing credentials."
+    cred_form = ChannelCredentialsForm(request.POST or None, initial={"credentials": current_creds})
+    cred_form.fields["credentials"].help_text = (
+        "Current values are shown. Leave blank to keep them, or paste {} to clear."
+    )
     if request.method == "POST":
         if form.is_valid() and cred_form.is_valid():
             channel = form.save(commit=False)

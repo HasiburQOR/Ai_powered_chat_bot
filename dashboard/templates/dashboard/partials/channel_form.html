@@ -8,7 +8,7 @@
         </div>
         <div>
           <h2 class="text-xl font-bold text-slate-900">{% if channel %}Edit{% else %}New{% endif %} Channel</h2>
-          <p class="text-xs text-slate-500">Instagram DM, Facebook Messenger, or WordPress Widget</p>
+          <p class="text-xs text-slate-500">Instagram DM, Facebook Messenger, WhatsApp, or WordPress Widget</p>
         </div>
       </div>
       <button type="button" onclick="document.getElementById('modal-overlay').remove()" class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-400 hover:text-slate-700 flex items-center justify-center font-bold text-sm transition-colors">✕</button>
@@ -68,7 +68,9 @@
         <div class="mt-2 p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-600 space-y-1">
           <p class="font-semibold text-slate-800">Supported JSON parameters:</p>
           <p>• <strong>Meta (IG/Messenger):</strong> <code>page_id</code>, <code>page_access_token</code>, <code>app_secret</code>, <code>verify_token</code></p>
+          <p>• <strong>WhatsApp:</strong> <code>phone_number_id</code>, <code>waba_id</code>, <code>access_token</code>, <code>app_secret</code>, <code>verify_token</code></p>
           <p>• <strong>WordPress Widget:</strong> <code>site_key</code>, <code>allowed_domain</code>, <code>bot_name</code>, <code>theme_color</code>, <code>welcome_message</code></p>
+          <p class="text-slate-500 pt-1">⚠️ A missing or misspelled <code>app_secret</code> is the #1 cause of webhook 403s — the GET verification only checks <code>verify_token</code>, but POST signature checks need <code>app_secret</code>.</p>
         </div>
       </div>
 

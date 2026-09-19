@@ -1,5 +1,6 @@
 import csv
 import datetime as dt
+import json
 from io import StringIO
 
 from django.contrib.auth import get_user_model
@@ -59,6 +60,43 @@ class ChannelCrudTests(TestCase):
         self.assertTrue(body.lstrip().startswith("<tbody"), body[:120])
         self.assertNotIn("<script>", body)
         self.assertIn("Renamed IG", body)
+
+    def test_channel_edit_form_prefills_current_credentials_json(self):
+        # The editor used to show a blank "leave unchanged" box, which made a
+        # mis-keyed/missing app_secret impossible to notice while debugging
+        # webhook 403s. Staff must be able to SEE what is actually stored.
+        channel = self._make_channel(credentials={
+            "phone_number_id": "1331911196672656",
+            "app_secret": "abc123",
+            "verify_token": "tok",
+        })
+        resp = self.client.get(reverse("dashboard-channel-edit", args=[channel.pk]))
+        self.assertEqual(resp.status_code, 200)
+        body = resp.content.decode()
+        self.assertIn("phone_number_id", body)
+        self.assertIn("1331911196672656", body)
+        self.assertIn("app_secret", body)
+        self.assertIn("verify_token", body)
+
+    def test_channel_update_blank_credentials_keeps_existing(self):
+        channel = self._make_channel(credentials={"app_secret": "abc", "verify_token": "tok"})
+        resp = self.client.post(reverse("dashboard-channel-edit", args=[channel.pk]), {
+            "name": "Renamed IG", "channel_type": "instagram",
+            "is_active": "on", "credentials": "",
+        })
+        self.assertEqual(resp.status_code, 200)
+        channel.refresh_from_db()
+        self.assertEqual(channel.credentials, {"app_secret": "abc", "verify_token": "tok"})
+
+    def test_channel_update_can_replace_credentials(self):
+        channel = self._make_channel(credentials={"app_secret": "old"})
+        resp = self.client.post(reverse("dashboard-channel-edit", args=[channel.pk]), {
+            "name": "Renamed IG", "channel_type": "instagram",
+            "is_active": "on", "credentials": json.dumps({"app_secret": "new"}),
+        })
+        self.assertEqual(resp.status_code, 200)
+        channel.refresh_from_db()
+        self.assertEqual(channel.credentials, {"app_secret": "new"})
 
     def test_channel_delete_is_hard_delete_and_cascades(self):
         channel = self._make_channel()

@@ -23,11 +23,18 @@ def meta_verify(request):
     if mode != "subscribe" or not token:
         return HttpResponseForbidden("Bad verification request")
 
+    # Strip stray whitespace on both sides — a verify token pasted into the
+    # credentials JSON with a trailing newline would otherwise never match.
+    token = token.strip()
+
     # Check every active Meta channel's verify_token (shared Meta app is common;
     # the WhatsApp Cloud API uses the same hub.* handshake).
     for channel in Channel.objects.filter(is_active=True, channel_type__in=["instagram", "messenger", "whatsapp"]):
-        if (channel.credentials or {}).get("verify_token") == token:
+        stored = str((channel.credentials or {}).get("verify_token") or "").strip()
+        if stored and hmac.compare_digest(stored, token):
             return HttpResponse(challenge, content_type="text/plain")
+    logger.warning("Meta webhook GET verification failed: verify token mismatch "
+                   "(check verify_token in the dashboard channel credentials)")
     return HttpResponseForbidden("Verify token mismatch")
 
 
@@ -36,6 +43,8 @@ def _find_channel_by_signature(payload: bytes, signature: str):
     (or legacy X-Hub-Signature sha1), or None. Signature verification is
     mandatory in production — never trust unsigned payloads."""
     if not signature:
+        logger.warning("Meta webhook rejected: X-Hub-Signature-256 header missing — "
+                       "if Meta is definitely calling, the reverse proxy may be stripping it")
         return None
 
     channels = list(Channel.objects.filter(is_active=True, channel_type__in=["instagram", "messenger", "whatsapp"]))
@@ -47,19 +56,35 @@ def _find_channel_by_signature(payload: bytes, signature: str):
         digest = signature.removeprefix("sha1=")
         hasher, algo_len = hashlib.sha1, 40
     else:
+        logger.warning("Meta webhook rejected: unrecognized signature format %r", signature[:16])
         return None
 
     if len(digest) != algo_len:
+        logger.warning("Meta webhook rejected: %s digest has wrong length %d (expected %d)",
+                       hasher().name, len(digest), algo_len)
         return None
 
+    with_secret = 0
     for channel in channels:
-        secret = (channel.credentials or {}).get("app_secret")
+        # str()+strip(): an app_secret pasted into the credentials JSON with a
+        # trailing newline/space signs differently and would never match.
+        secret = str((channel.credentials or {}).get("app_secret") or "").strip()
         if not secret:
             continue
+        with_secret += 1
         expected = hmac.new(secret.encode(), payload, hasher).hexdigest()
         if hmac.compare_digest(expected, digest):
             return channel
 
+    # Diagnostics only — the secrets themselves are NEVER logged.
+    logger.warning(
+        "Meta webhook rejected: signature matched no active channel. "
+        "active_meta_channels=%d channels_with_app_secret_key=%d "
+        "(causes: stored app_secret differs from the Meta app's App Secret, "
+        "the 'app_secret' key is missing/misspelled in the credentials JSON, "
+        "or the channel holding it is deactivated)",
+        len(channels), with_secret,
+    )
     return None
 
 
