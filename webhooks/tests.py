@@ -96,6 +96,24 @@ class MetaWebhookTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(mock_task.delay.call_args[0][0], "instagram")
 
+    def test_get_without_hub_params_logs_rejection(self):
+        """Regression: bare GETs (bot/scanner probes) used to 403 with NO log
+        line, making stray 'django.request: Forbidden' entries impossible to
+        attribute — they looked exactly like a Meta rejection."""
+        with self.assertLogs("webhooks.views", level="WARNING") as logs:
+            resp = self.client.get("/webhooks/meta/")
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(any("bad verification request" in line for line in logs.output))
+
+    @patch("webhooks.views.process_inbound_message")
+    def test_accepted_post_logs_info_line(self, mock_task):
+        """Acceptance must be visible: a silent 200 made it impossible to tell
+        whether Meta's traffic was arriving at all."""
+        with self.assertLogs("webhooks.views", level="INFO") as logs:
+            resp = self._post_signed(make_payload())
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(any("Meta webhook accepted" in line for line in logs.output))
+
 
 def make_whatsapp_payload(sender_wa="8801712345678", text="hi there",
                           phone_number_id="PNID1", profile_name="Ravi Kumar"):

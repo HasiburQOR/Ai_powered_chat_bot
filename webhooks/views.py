@@ -21,6 +21,13 @@ def meta_verify(request):
     challenge = request.GET.get("hub.challenge", "")
 
     if mode != "subscribe" or not token:
+        # Not Meta (Meta always sends hub.mode + hub.verify_token) — almost
+        # always a bot/scanner probe. Log the UA so stray 403s are attributable.
+        logger.warning(
+            "Meta webhook GET rejected: bad verification request (mode=%r, "
+            "token_present=%s, ua=%r)",
+            mode, bool(token), request.headers.get("User-Agent", ""),
+        )
         return HttpResponseForbidden("Bad verification request")
 
     # Strip stray whitespace on both sides — a verify token pasted into the
@@ -111,6 +118,8 @@ def meta_webhook(request):
     try:
         data = json.loads(payload)
     except ValueError:
+        logger.warning("Meta webhook rejected: payload is not valid JSON after a "
+                       "valid signature (channel=%s, bytes=%d)", channel.pk, len(payload))
         return HttpResponseForbidden("Invalid JSON")
 
     # Top-level object tells us which surface: "page" (Messenger),
@@ -124,6 +133,10 @@ def meta_webhook(request):
         _enqueue_whatsapp_events(data)
     # Unknown object — ack and ignore (Meta retries non-200 aggressively).
 
+    # Visible acceptance: a silent 200 made it impossible to tell whether
+    # Meta's traffic was reaching the app at all.
+    logger.info("Meta webhook accepted: object=%s channel=%s bytes=%d",
+                obj, channel.pk, len(payload))
     return HttpResponse(status=200)
 
 
